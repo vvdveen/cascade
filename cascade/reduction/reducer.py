@@ -33,7 +33,7 @@ class ReductionResult:
     original_size: int
 
     # Reduced program size (instructions)
-    reduced_size: int
+    reduced_size: int = 0
 
     # Tail detection result
     tail: Optional[TailResult] = None
