@@ -190,6 +190,7 @@ class Fuzzer:
         for i in range(num_programs):
             try:
                 prev_executed = self.stats.programs_executed
+                prev_bugs = self.stats.bugs_found
                 self._fuzz_iteration(i)
                 executed += self.stats.programs_executed - prev_executed
             except Exception as e:
@@ -201,6 +202,7 @@ class Fuzzer:
                 self._print_progress(
                     completed,
                     executed,
+                    self.stats.bugs_found,
                     num_programs,
                     {0: i + 1},
                     {0: num_programs},
@@ -238,20 +240,22 @@ class Fuzzer:
 
             completed = 0
             executed = 0
+            bugs_found = 0
             last_print = time.time()
             while completed < num_programs:
                 try:
-                    worker_id, executed_delta = progress_queue.get(timeout=0.1)
+                    worker_id, executed_delta, bug_delta = progress_queue.get(timeout=0.1)
                     if worker_id in worker_done:
                         worker_done[worker_id] += 1
                         completed += 1
                         executed += executed_delta
+                        bugs_found += bug_delta
                 except queue.Empty:
                     pass
 
                 now = time.time()
                 if now - last_print >= 0.2 or completed == num_programs:
-                    self._print_progress(completed, executed, num_programs, worker_done, worker_totals)
+                    self._print_progress(completed, executed, bugs_found, num_programs, worker_done, worker_totals)
                     last_print = now
 
                 if all(f.done() for f in futures):
@@ -375,7 +379,7 @@ class Fuzzer:
         self.stats.rtl_errors += worker_stats.rtl_errors
         self.bugs.extend(worker_bugs)
 
-    def _print_progress(self, completed: int, executed: int, total: int,
+    def _print_progress(self, completed: int, executed: int, bugs_found: int, total: int,
                         per_worker_done: dict, per_worker_total: dict) -> None:
         """Print progress bars for overall and per-worker runs."""
         overall = _format_bar(executed, total)
@@ -384,7 +388,7 @@ class Fuzzer:
             done = per_worker_done.get(worker_id, 0)
             total_worker = per_worker_total[worker_id]
             worker_parts.append(f"W{worker_id} { _format_bar(done, total_worker, width=10) }")
-        line = f"\rOverall {overall} done {completed}/{total}  " + "  ".join(worker_parts)
+        line = f"\rOverall {overall} done {completed}/{total} bugs {bugs_found}  " + "  ".join(worker_parts)
         print(line, end="", flush=True)
 
 
@@ -416,11 +420,13 @@ def _worker_fuzz(config: FuzzerConfig, start_index: int, count: int,
         iteration = start_index + i
         try:
             prev_executed = fuzzer.stats.programs_executed
+            prev_bugs = fuzzer.stats.bugs_found
             fuzzer._fuzz_iteration(iteration)
         except Exception as e:
             logger.error(f"Worker {worker_id} error at iteration {iteration}: {e}")
         executed_delta = fuzzer.stats.programs_executed - prev_executed
-        progress_queue.put((worker_id, executed_delta))
+        bug_delta = fuzzer.stats.bugs_found - prev_bugs
+        progress_queue.put((worker_id, executed_delta, bug_delta))
 
     return fuzzer.stats, fuzzer.bugs
 
