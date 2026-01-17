@@ -156,10 +156,11 @@ To disassemble `ultimate.elf` for a bug:
 riscv32-unknown-elf-objdump -d output/bugs/<bug_id>/ultimate.elf
 ```
 
-On macOS, install the RISC-V toolchain via Homebrew:
+On macOS, install the RISC-V toolchain via Homebrew (tap required):
 
 ```bash
-brew install riscv-gnu-toolchain
+brew tap riscv/riscv
+brew install riscv/riscv/riscv-gnu-toolchain
 ```
 
 If your Homebrew package only provides `riscv64-unknown-elf-objdump`, use that instead.
