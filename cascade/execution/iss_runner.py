@@ -92,11 +92,15 @@ class ISSRunner:
                 result.raw_output = proc.stdout + proc.stderr
                 result.exit_code = proc.returncode
 
-                # Parse output
-                if collect_feedback:
-                    result.feedback = self._parse_feedback(result.raw_output, program)
-
-                result.success = proc.returncode == 0
+                # Check for errors
+                if proc.returncode != 0:
+                    result.error_message = result.raw_output[:500] if result.raw_output else f"Exit code {proc.returncode}"
+                    result.success = False
+                else:
+                    result.success = True
+                    # Parse output
+                    if collect_feedback:
+                        result.feedback = self._parse_feedback(result.raw_output, program)
                 result.instruction_count = self._count_instructions(result.raw_output)
 
             except subprocess.TimeoutExpired:
@@ -118,13 +122,10 @@ class ISSRunner:
         # ISA specification
         cmd.extend(["--isa", self.isa_string])
 
-        # Memory configuration
+        # Memory configuration - format is -m<base>:<size> (no space after -m)
         mem_start = self.config.memory.code_start
         mem_size = 0x100000  # 1MB
-        cmd.extend(["-m", f"0x{mem_start:x}:0x{mem_size:x}"])
-
-        # Instruction limit
-        cmd.extend(["-l", str(self.config.iss_timeout)])
+        cmd.append(f"-m{mem_start:#x}:{mem_size:#x}")
 
         # Enable logging for feedback collection
         if trace:

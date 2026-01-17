@@ -128,13 +128,16 @@ class ELFWriter:
         # ELF header size
         ehdr_size = 52
         phdr_size = 32
+        shdr_size = 40  # Section header size for 32-bit
 
         # We have one program header (for code)
         num_phdrs = 1
+        num_shdrs = 1  # Just the null section header (required by some loaders)
 
         # Calculate offsets
         phdr_offset = ehdr_size
-        code_offset = ehdr_size + (phdr_size * num_phdrs)
+        shdr_offset = ehdr_size + (phdr_size * num_phdrs)
+        code_offset = shdr_offset + (shdr_size * num_shdrs)
 
         # Align code to page boundary
         code_offset = (code_offset + 0xFFF) & ~0xFFF
@@ -143,7 +146,10 @@ class ELFWriter:
         ehdr = self._build_elf32_header(
             entry=entry,
             phoff=phdr_offset,
-            phnum=num_phdrs
+            phnum=num_phdrs,
+            shoff=shdr_offset,
+            shnum=num_shdrs,
+            shstrndx=0  # SHN_UNDEF - no section name string table
         )
 
         # Build program header for code
@@ -158,10 +164,14 @@ class ELFWriter:
             p_align=0x1000
         )
 
+        # Build null section header (required as first entry)
+        shdr_null = self._build_shdr32_null()
+
         # Assemble ELF
         elf = bytearray()
         elf.extend(ehdr)
         elf.extend(phdr)
+        elf.extend(shdr_null)
 
         # Pad to code offset
         elf.extend(b'\x00' * (code_offset - len(elf)))
@@ -170,6 +180,10 @@ class ELFWriter:
         elf.extend(code)
 
         return bytes(elf)
+
+    def _build_shdr32_null(self) -> bytes:
+        """Build null section header (all zeros, 40 bytes)."""
+        return b'\x00' * 40
 
     def _build_elf64(self, code: bytes, entry: int, load_addr: int) -> bytes:
         """Build 64-bit ELF file."""
@@ -207,7 +221,8 @@ class ELFWriter:
 
         return bytes(elf)
 
-    def _build_elf32_header(self, entry: int, phoff: int, phnum: int) -> bytes:
+    def _build_elf32_header(self, entry: int, phoff: int, phnum: int,
+                             shoff: int = 0, shnum: int = 0, shstrndx: int = 0) -> bytes:
         """Build 32-bit ELF header."""
         ehdr = bytearray()
 
@@ -235,7 +250,7 @@ class ELFWriter:
         ehdr.extend(struct.pack('<I', phoff))
 
         # e_shoff (4 bytes)
-        ehdr.extend(struct.pack('<I', 0))
+        ehdr.extend(struct.pack('<I', shoff))
 
         # e_flags (4 bytes) - RVC/RVE flags could go here
         ehdr.extend(struct.pack('<I', 0))
@@ -250,13 +265,13 @@ class ELFWriter:
         ehdr.extend(struct.pack('<H', phnum))
 
         # e_shentsize (2 bytes)
-        ehdr.extend(struct.pack('<H', 0))
+        ehdr.extend(struct.pack('<H', 40 if shnum > 0 else 0))
 
         # e_shnum (2 bytes)
-        ehdr.extend(struct.pack('<H', 0))
+        ehdr.extend(struct.pack('<H', shnum))
 
         # e_shstrndx (2 bytes)
-        ehdr.extend(struct.pack('<H', 0))
+        ehdr.extend(struct.pack('<H', shstrndx))
 
         return bytes(ehdr)
 

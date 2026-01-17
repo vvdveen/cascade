@@ -142,6 +142,7 @@ class Fuzzer:
 
         if not result.success and not isinstance(self.iss_runner, MockISSRunner):
             logger.error(f"Calibration failed: {result.error_message}")
+            logger.debug(f"ISS raw output: {result.raw_output[:1000] if result.raw_output else 'none'}")
             return False
 
         logger.info("Calibration successful")
