@@ -1,0 +1,393 @@
+"""
+Main Cascade fuzzer implementation.
+
+Orchestrates program generation, ISS pre-simulation, RTL execution,
+and bug detection.
+"""
+
+import argparse
+import logging
+import sys
+import time
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import List, Optional
+
+from .config import (
+    FuzzerConfig, CPUConfig, MemoryLayout, InstructionWeights,
+    Extension, PICORV32_CONFIG, VEXRISCV_CONFIG, ROCKET_CONFIG
+)
+from .generator.intermediate import IntermediateProgram, IntermediateProgramGenerator
+from .generator.ultimate import UltimateProgram, UltimateProgramGenerator
+from .execution.iss_runner import ISSRunner, MockISSRunner
+from .execution.rtl_runner import RTLRunner, MockRTLRunner
+from .execution.elf_writer import ELFWriter
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger('cascade')
+
+
+@dataclass
+class BugReport:
+    """Report for a detected bug."""
+    bug_id: str
+    timestamp: datetime
+    program_seed: int
+    program_path: Path
+    reduced_program_path: Optional[Path] = None
+    description: str = ""
+    cycle_count: int = 0
+    instruction_count: int = 0
+
+
+@dataclass
+class FuzzerStats:
+    """Statistics from fuzzing run."""
+    programs_generated: int = 0
+    programs_executed: int = 0
+    bugs_found: int = 0
+    iss_errors: int = 0
+    rtl_errors: int = 0
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+
+    @property
+    def duration(self) -> float:
+        """Duration in seconds."""
+        if self.start_time is None:
+            return 0
+        end = self.end_time or datetime.now()
+        return (end - self.start_time).total_seconds()
+
+    @property
+    def programs_per_second(self) -> float:
+        """Programs generated per second."""
+        if self.duration == 0:
+            return 0
+        return self.programs_generated / self.duration
+
+
+class Fuzzer:
+    """
+    Main Cascade fuzzer.
+
+    Implements the fuzzing loop:
+    1. Generate intermediate program
+    2. Run on ISS, collect feedback
+    3. Generate ultimate program
+    4. Run on RTL, detect bugs
+    5. Reduce bug-triggering programs
+    """
+
+    def __init__(self, config: FuzzerConfig):
+        """Initialize fuzzer."""
+        self.config = config
+        self.stats = FuzzerStats()
+        self.bugs: List[BugReport] = []
+
+        # Initialize generators
+        self.intermediate_gen = IntermediateProgramGenerator(config)
+        self.ultimate_gen = UltimateProgramGenerator(config)
+
+        # Initialize runners
+        self._init_runners()
+
+        # ELF writer
+        self.elf_writer = ELFWriter(config.cpu.xlen)
+
+        # Output directory
+        self.output_dir = config.output_dir
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    def _init_runners(self) -> None:
+        """Initialize ISS and RTL runners."""
+        # Check if Spike is available
+        self.iss_runner = ISSRunner(self.config)
+        available, msg = self.iss_runner.check_spike_available()
+        if not available:
+            logger.warning(f"Spike not available: {msg}")
+            logger.warning("Using mock ISS runner")
+            self.iss_runner = MockISSRunner(self.config)
+
+        # Check if RTL simulation is available
+        if self.config.rtl_model_path:
+            self.rtl_runner = RTLRunner(self.config)
+            available, msg = self.rtl_runner.check_verilator_available()
+            if not available:
+                logger.warning(f"Verilator not available: {msg}")
+                logger.warning("Using mock RTL runner")
+                self.rtl_runner = MockRTLRunner(self.config)
+        else:
+            logger.warning("RTL model path not configured, using mock runner")
+            self.rtl_runner = MockRTLRunner(self.config)
+
+    def calibrate(self) -> bool:
+        """
+        Calibrate fuzzer for target CPU.
+
+        Determines available CSRs, extension support, etc.
+        """
+        logger.info(f"Calibrating for {self.config.cpu.name}")
+
+        # Generate a simple test program
+        test_program = self.intermediate_gen.generate(seed=0)
+
+        # Run on ISS to verify setup
+        result = self.iss_runner.run(test_program, collect_feedback=False)
+
+        if not result.success and not isinstance(self.iss_runner, MockISSRunner):
+            logger.error(f"Calibration failed: {result.error_message}")
+            return False
+
+        logger.info("Calibration successful")
+        return True
+
+    def fuzz(self, num_programs: Optional[int] = None) -> List[BugReport]:
+        """
+        Run the main fuzzing loop.
+
+        Args:
+            num_programs: Number of programs to generate (default from config)
+
+        Returns:
+            List of bug reports
+        """
+        if num_programs is None:
+            num_programs = self.config.num_programs
+
+        logger.info(f"Starting fuzzing run: {num_programs} programs")
+
+        self.stats = FuzzerStats()
+        self.stats.start_time = datetime.now()
+        self.bugs = []
+
+        for i in range(num_programs):
+            try:
+                self._fuzz_iteration(i)
+            except Exception as e:
+                logger.error(f"Error in iteration {i}: {e}")
+                continue
+
+            # Log progress
+            if (i + 1) % 100 == 0:
+                self._log_progress()
+
+        self.stats.end_time = datetime.now()
+        self._log_final_stats()
+
+        return self.bugs
+
+    def _fuzz_iteration(self, iteration: int) -> None:
+        """Run a single fuzzing iteration."""
+        seed = self.config.seed
+        if seed is not None:
+            seed = seed + iteration
+
+        # 1. Generate intermediate program
+        intermediate = self.intermediate_gen.generate(seed=seed)
+        self.stats.programs_generated += 1
+
+        # 2. Run on ISS, collect feedback
+        iss_result = self.iss_runner.run(intermediate, collect_feedback=True)
+
+        if not iss_result.success:
+            self.stats.iss_errors += 1
+            if iss_result.timeout:
+                logger.debug(f"ISS timeout at iteration {iteration}")
+            return
+
+        if iss_result.feedback is None:
+            logger.warning(f"No ISS feedback at iteration {iteration}")
+            return
+
+        # 3. Generate ultimate program
+        ultimate = self.ultimate_gen.generate(intermediate, iss_result.feedback)
+
+        # 4. Run on RTL
+        rtl_result = self.rtl_runner.run(ultimate)
+        self.stats.programs_executed += 1
+
+        # 5. Check for bugs
+        if rtl_result.bug_detected:
+            bug = self._report_bug(iteration, intermediate, ultimate, rtl_result)
+            self.bugs.append(bug)
+            self.stats.bugs_found += 1
+            logger.info(f"Bug detected! ID: {bug.bug_id}")
+
+        if not rtl_result.success and not rtl_result.bug_detected:
+            self.stats.rtl_errors += 1
+
+    def _report_bug(self, iteration: int,
+                    intermediate: IntermediateProgram,
+                    ultimate: UltimateProgram,
+                    rtl_result) -> BugReport:
+        """Create a bug report and save artifacts."""
+        timestamp = datetime.now()
+        bug_id = f"bug_{timestamp.strftime('%Y%m%d_%H%M%S')}_{iteration}"
+
+        # Create bug directory
+        bug_dir = self.output_dir / "bugs" / bug_id
+        bug_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save programs
+        ultimate_path = bug_dir / "ultimate.elf"
+        intermediate_path = bug_dir / "intermediate.elf"
+
+        self.elf_writer.write(ultimate, ultimate_path)
+        self.elf_writer.write(intermediate, intermediate_path)
+
+        # Save metadata
+        meta_path = bug_dir / "metadata.txt"
+        with open(meta_path, 'w') as f:
+            f.write(f"Bug ID: {bug_id}\n")
+            f.write(f"Timestamp: {timestamp}\n")
+            f.write(f"Seed: {intermediate.descriptor.seed if intermediate.descriptor else 'unknown'}\n")
+            f.write(f"Blocks: {len(ultimate.blocks)}\n")
+            f.write(f"Cycle count: {rtl_result.cycle_count}\n")
+            f.write(f"RTL output:\n{rtl_result.raw_output}\n")
+
+        return BugReport(
+            bug_id=bug_id,
+            timestamp=timestamp,
+            program_seed=intermediate.descriptor.seed if intermediate.descriptor else 0,
+            program_path=ultimate_path,
+            cycle_count=rtl_result.cycle_count,
+            description=rtl_result.error_message
+        )
+
+    def _log_progress(self) -> None:
+        """Log current progress."""
+        logger.info(
+            f"Progress: {self.stats.programs_generated} programs, "
+            f"{self.stats.bugs_found} bugs, "
+            f"{self.stats.programs_per_second:.1f} prog/s"
+        )
+
+    def _log_final_stats(self) -> None:
+        """Log final statistics."""
+        logger.info("=" * 50)
+        logger.info("Fuzzing Complete")
+        logger.info("=" * 50)
+        logger.info(f"Programs generated: {self.stats.programs_generated}")
+        logger.info(f"Programs executed: {self.stats.programs_executed}")
+        logger.info(f"Bugs found: {self.stats.bugs_found}")
+        logger.info(f"ISS errors: {self.stats.iss_errors}")
+        logger.info(f"RTL errors: {self.stats.rtl_errors}")
+        logger.info(f"Duration: {self.stats.duration:.1f}s")
+        logger.info(f"Rate: {self.stats.programs_per_second:.1f} programs/second")
+
+
+def main():
+    """Command-line entry point."""
+    parser = argparse.ArgumentParser(
+        description="Cascade: RISC-V CPU Fuzzer"
+    )
+
+    parser.add_argument(
+        "-n", "--num-programs",
+        type=int,
+        default=100,
+        help="Number of programs to generate"
+    )
+
+    parser.add_argument(
+        "-c", "--cpu",
+        choices=["picorv32", "vexriscv", "rocket", "custom"],
+        default="picorv32",
+        help="Target CPU"
+    )
+
+    parser.add_argument(
+        "--rtl-path",
+        type=Path,
+        help="Path to RTL model"
+    )
+
+    parser.add_argument(
+        "--spike-path",
+        type=Path,
+        default=Path("/opt/riscv/bin/spike"),
+        help="Path to Spike ISS"
+    )
+
+    parser.add_argument(
+        "-o", "--output",
+        type=Path,
+        default=Path("./output"),
+        help="Output directory"
+    )
+
+    parser.add_argument(
+        "-s", "--seed",
+        type=int,
+        help="Random seed for reproducibility"
+    )
+
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Enable verbose output"
+    )
+
+    parser.add_argument(
+        "--calibrate-only",
+        action="store_true",
+        help="Only run calibration, don't fuzz"
+    )
+
+    args = parser.parse_args()
+
+    # Set up logging level
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+
+    # Select CPU configuration
+    if args.cpu == "picorv32":
+        cpu_config = PICORV32_CONFIG
+    elif args.cpu == "vexriscv":
+        cpu_config = VEXRISCV_CONFIG
+    elif args.cpu == "rocket":
+        cpu_config = ROCKET_CONFIG
+    else:
+        cpu_config = CPUConfig(name="custom")
+
+    # Create fuzzer configuration
+    config = FuzzerConfig(
+        cpu=cpu_config,
+        num_programs=args.num_programs,
+        output_dir=args.output,
+        spike_path=args.spike_path,
+        rtl_model_path=args.rtl_path,
+        seed=args.seed,
+    )
+
+    # Create and run fuzzer
+    fuzzer = Fuzzer(config)
+
+    # Calibrate
+    if not fuzzer.calibrate():
+        logger.error("Calibration failed")
+        sys.exit(1)
+
+    if args.calibrate_only:
+        logger.info("Calibration complete, exiting")
+        sys.exit(0)
+
+    # Fuzz
+    bugs = fuzzer.fuzz()
+
+    if bugs:
+        logger.info(f"Found {len(bugs)} bugs!")
+        for bug in bugs:
+            logger.info(f"  - {bug.bug_id}: {bug.program_path}")
+
+    sys.exit(0 if not bugs else 1)
+
+
+if __name__ == "__main__":
+    main()
