@@ -69,7 +69,7 @@ install_system_deps() {
             device-tree-compiler libboost-all-dev \
             python3 python3-pip \
             flex bison ccache libgoogle-perftools-dev numactl perl-doc \
-            libfl2 libfl-dev zlibc zlib1g zlib1g-dev
+            libfl2 libfl-dev zlib1g zlib1g-dev
     elif command -v dnf &> /dev/null; then
         sudo dnf install -y \
             git gcc g++ make autoconf automake libtool \
