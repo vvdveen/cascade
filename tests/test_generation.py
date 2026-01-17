@@ -58,7 +58,7 @@ class TestIntermediateProgramGeneration:
         program = generator.generate(seed=42)
 
         final_block = program.blocks[-1]
-        # Final block should have terminator (infinite loop)
+        # Final block should have terminator (ebreak)
         assert final_block.terminator is not None
 
     def test_blocks_are_contiguous(self, generator):
