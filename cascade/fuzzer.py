@@ -28,6 +28,7 @@ from .generator.ultimate import UltimateProgram, UltimateProgramGenerator
 from .execution.iss_runner import ISSRunner, MockISSRunner
 from .execution.rtl_runner import RTLRunner, MockRTLRunner
 from .execution.elf_writer import ELFWriter
+from .reduction.reducer import Reducer
 
 # Set up logging
 logging.basicConfig(
@@ -104,6 +105,7 @@ class Fuzzer:
 
         # ELF writer
         self.elf_writer = ELFWriter(config.cpu.xlen)
+        self.reducer = Reducer(config, self.rtl_runner, self.iss_runner)
 
         # Output directory
         self.output_dir = config.output_dir
@@ -303,7 +305,8 @@ class Fuzzer:
 
         # 5. Check for bugs
         if rtl_result.bug_detected:
-            bug = self._report_bug(iteration, intermediate, ultimate, rtl_result)
+            reduction = self.reducer.reduce(ultimate, iss_result.feedback)
+            bug = self._report_bug(iteration, intermediate, ultimate, rtl_result, reduction)
             self.bugs.append(bug)
             self.stats.bugs_found += 1
             logger.info(f"Bug detected! ID: {bug.bug_id}")
@@ -314,7 +317,8 @@ class Fuzzer:
     def _report_bug(self, iteration: int,
                     intermediate: IntermediateProgram,
                     ultimate: UltimateProgram,
-                    rtl_result) -> BugReport:
+                    rtl_result,
+                    reduction) -> BugReport:
         """Create a bug report and save artifacts."""
         timestamp = datetime.now()
         bug_id = f"bug_{timestamp.strftime('%Y%m%d_%H%M%S')}_{iteration}"
@@ -328,12 +332,18 @@ class Fuzzer:
         intermediate_path = bug_dir / "intermediate.elf"
         ultimate_asm_path = bug_dir / "ultimate.S"
         rerun_script_path = bug_dir / "rerun_rtl.sh"
+        reduced_path = bug_dir / "reduced.elf"
+        reduced_asm_path = bug_dir / "reduced.S"
 
         self.elf_writer.write(ultimate, ultimate_path)
         self.elf_writer.write(intermediate, intermediate_path)
         with open(ultimate_asm_path, "w") as asm_file:
             asm_file.write(self._format_program_asm(ultimate))
         self._write_rerun_script(rerun_script_path, intermediate.descriptor.seed if intermediate.descriptor else 0)
+        if reduction and reduction.reduced_program:
+            self.elf_writer.write(reduction.reduced_program, reduced_path)
+            with open(reduced_asm_path, "w") as asm_file:
+                asm_file.write(self._format_program_asm(reduction.reduced_program))
 
         # Save metadata
         meta_path = bug_dir / "metadata.txt"
@@ -343,6 +353,9 @@ class Fuzzer:
             f.write(f"Seed: {intermediate.descriptor.seed if intermediate.descriptor else 'unknown'}\n")
             f.write(f"Blocks: {len(ultimate.blocks)}\n")
             f.write(f"Cycle count: {rtl_result.cycle_count}\n")
+            if reduction:
+                f.write(f"Reduced blocks: {len(reduction.reduced_program.blocks) if reduction.reduced_program else 'unknown'}\n")
+                f.write(f"Reduced instructions: {reduction.reduced_size}\n")
             f.write(f"RTL output:\n{rtl_result.raw_output}\n")
 
         return BugReport(
@@ -350,6 +363,7 @@ class Fuzzer:
             timestamp=timestamp,
             program_seed=intermediate.descriptor.seed if intermediate.descriptor else 0,
             program_path=ultimate_path,
+            reduced_program_path=reduced_path if reduction and reduction.reduced_program else None,
             cycle_count=rtl_result.cycle_count,
             description=rtl_result.error_message
         )
