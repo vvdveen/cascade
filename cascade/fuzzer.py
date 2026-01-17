@@ -306,13 +306,18 @@ class Fuzzer:
         # 5. Check for bugs
         if rtl_result.bug_detected:
             self.stats.bugs_found += 1
+            bug, bug_dir = self._report_bug_pre(
+                iteration, intermediate, ultimate, rtl_result
+            )
             reduction = None
             try:
                 reduction = self.reducer.reduce(ultimate, iss_result.feedback)
             except Exception as e:
                 logger.error(f"Reduction failed at iteration {iteration}: {e}")
             try:
-                bug = self._report_bug(iteration, intermediate, ultimate, rtl_result, reduction)
+                self._report_bug_post(bug_dir, reduction)
+                if reduction and reduction.reduced_program:
+                    bug.reduced_program_path = bug_dir / "reduced.elf"
                 self.bugs.append(bug)
                 logger.info(f"Bug detected! ID: {bug.bug_id}")
             except Exception as e:
@@ -321,12 +326,11 @@ class Fuzzer:
         if not rtl_result.success and not rtl_result.bug_detected:
             self.stats.rtl_errors += 1
 
-    def _report_bug(self, iteration: int,
-                    intermediate: IntermediateProgram,
-                    ultimate: UltimateProgram,
-                    rtl_result,
-                    reduction) -> BugReport:
-        """Create a bug report and save artifacts."""
+    def _report_bug_pre(self, iteration: int,
+                        intermediate: IntermediateProgram,
+                        ultimate: UltimateProgram,
+                        rtl_result) -> Tuple[BugReport, Path]:
+        """Save pre-reduction bug artifacts and metadata."""
         timestamp = datetime.now()
         bug_id = f"bug_{timestamp.strftime('%Y%m%d_%H%M%S')}_{iteration}"
 
@@ -339,18 +343,12 @@ class Fuzzer:
         intermediate_path = bug_dir / "intermediate.elf"
         ultimate_asm_path = bug_dir / "ultimate.S"
         rerun_script_path = bug_dir / "rerun_rtl.sh"
-        reduced_path = bug_dir / "reduced.elf"
-        reduced_asm_path = bug_dir / "reduced.S"
 
         self.elf_writer.write(ultimate, ultimate_path)
         self.elf_writer.write(intermediate, intermediate_path)
         with open(ultimate_asm_path, "w") as asm_file:
             asm_file.write(self._format_program_asm(ultimate))
         self._write_rerun_script(rerun_script_path, intermediate.descriptor.seed if intermediate.descriptor else 0)
-        if reduction and reduction.reduced_program:
-            self.elf_writer.write(reduction.reduced_program, reduced_path)
-            with open(reduced_asm_path, "w") as asm_file:
-                asm_file.write(self._format_program_asm(reduction.reduced_program))
 
         # Save metadata
         meta_path = bug_dir / "metadata.txt"
@@ -360,20 +358,36 @@ class Fuzzer:
             f.write(f"Seed: {intermediate.descriptor.seed if intermediate.descriptor else 'unknown'}\n")
             f.write(f"Blocks: {len(ultimate.blocks)}\n")
             f.write(f"Cycle count: {rtl_result.cycle_count}\n")
-            if reduction:
-                f.write(f"Reduced blocks: {len(reduction.reduced_program.blocks) if reduction.reduced_program else 'unknown'}\n")
-                f.write(f"Reduced instructions: {reduction.reduced_size}\n")
+            f.write("Reduction: pending\n")
             f.write(f"RTL output:\n{rtl_result.raw_output}\n")
 
-        return BugReport(
+        bug = BugReport(
             bug_id=bug_id,
             timestamp=timestamp,
             program_seed=intermediate.descriptor.seed if intermediate.descriptor else 0,
             program_path=ultimate_path,
-            reduced_program_path=reduced_path if reduction and reduction.reduced_program else None,
             cycle_count=rtl_result.cycle_count,
             description=rtl_result.error_message
         )
+        return bug, bug_dir
+
+    def _report_bug_post(self, bug_dir: Path, reduction) -> None:
+        """Save reduced artifacts and append reduction metadata."""
+        if reduction and reduction.reduced_program:
+            reduced_path = bug_dir / "reduced.elf"
+            reduced_asm_path = bug_dir / "reduced.S"
+            self.elf_writer.write(reduction.reduced_program, reduced_path)
+            with open(reduced_asm_path, "w") as asm_file:
+                asm_file.write(self._format_program_asm(reduction.reduced_program))
+
+        meta_path = bug_dir / "metadata.txt"
+        with open(meta_path, "a") as f:
+            if reduction and reduction.reduced_program:
+                f.write(f"Reduced blocks: {len(reduction.reduced_program.blocks)}\n")
+                f.write(f"Reduced instructions: {reduction.reduced_size}\n")
+                f.write(f"Reduction ratio: {reduction.reduction_ratio:.1%}\n")
+            else:
+                f.write("Reduction: failed or unavailable\n")
 
     def _format_program_asm(self, program: UltimateProgram) -> str:
         """Format ultimate program as simple assembly listing."""

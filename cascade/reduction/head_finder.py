@@ -6,6 +6,7 @@ using a context setter block and binary search.
 """
 
 import copy
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Optional, Tuple, List, Dict
 
@@ -70,6 +71,7 @@ class HeadFinder:
         self.config = config
         self.rtl_runner = rtl_runner
         self.iss_runner = iss_runner
+        self.max_workers = max(1, config.num_workers)
 
     def find_head(self, program: UltimateProgram,
                   tail_pc: int,
@@ -139,34 +141,20 @@ class HeadFinder:
         if start_idx >= end_idx:
             return blocks[start_idx] if start_idx < len(blocks) else None, 0
 
-        low, high = start_idx, end_idx
-        iterations = 0
-
-        while low < high:
-            mid = (low + high + 1) // 2  # Bias toward higher to find first block
-            iterations += 1
-
-            # Get state at beginning of block mid
-            state = self._get_state_at_block(program, mid, feedback)
-
+        candidates = []
+        for idx in range(start_idx, end_idx + 1):
+            state = self._get_state_at_block(program, idx, feedback)
             if state is None:
-                # Can't get state, assume bug is before mid
-                high = mid - 1
                 continue
+            modified = self._create_context_program(program, idx, state)
+            candidates.append((idx, modified))
 
-            # Create program starting at mid with context setter
-            modified = self._create_context_program(program, mid, state)
+        results = self._run_candidates(candidates)
+        triggering = [idx for idx, bug in results.items() if bug]
+        if not triggering:
+            return None, len(candidates)
 
-            result = self.rtl_runner.run(modified)
-
-            if result.bug_detected:
-                # Bug still triggers, head is at mid or later
-                low = mid
-            else:
-                # Bug doesn't trigger, head is before mid
-                high = mid - 1
-
-        return blocks[low] if low < len(blocks) else None, iterations
+        return blocks[max(triggering)], len(candidates)
 
     def _find_head_instruction(self, program: UltimateProgram,
                                block: BasicBlock,
@@ -179,33 +167,22 @@ class HeadFinder:
         if n <= 1:
             return 0 if n == 1 else None, 0
 
-        low, high = 0, n - 1
-        iterations = 0
-
-        while low < high:
-            mid = (low + high + 1) // 2
-            iterations += 1
-
-            # Get state at instruction mid within block
-            state = self._get_state_at_instruction(program, block, mid, feedback)
-
+        candidates = []
+        for idx in range(0, n):
+            state = self._get_state_at_instruction(program, block, idx, feedback)
             if state is None:
-                high = mid - 1
                 continue
-
-            # Create program starting at this instruction
             modified = self._create_instruction_context_program(
-                program, block, mid, state
+                program, block, idx, state
             )
+            candidates.append((idx, modified))
 
-            result = self.rtl_runner.run(modified)
+        results = self._run_candidates(candidates)
+        triggering = [idx for idx, bug in results.items() if bug]
+        if not triggering:
+            return None, len(candidates)
 
-            if result.bug_detected:
-                low = mid
-            else:
-                high = mid - 1
-
-        return low, iterations
+        return max(triggering), len(candidates)
 
     def _get_state_at_block(self, program: UltimateProgram,
                             block_idx: int,
@@ -256,6 +233,25 @@ class HeadFinder:
             registers={i: 0 for i in range(32)},
             pc=pc
         )
+
+    def _run_candidates(self, candidates: List[Tuple[int, UltimateProgram]]) -> dict:
+        """Run RTL candidates in parallel and return bug map."""
+        results = {}
+        if self.max_workers <= 1 or len(candidates) <= 1:
+            for idx, program in candidates:
+                results[idx] = self.rtl_runner.run(program).bug_detected
+            return results
+
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            future_map = {executor.submit(self.rtl_runner.run, program): idx for idx, program in candidates}
+            for future in as_completed(future_map):
+                idx = future_map[future]
+                try:
+                    results[idx] = future.result().bug_detected
+                except Exception:
+                    results[idx] = False
+
+        return results
 
     def _create_context_program(self, program: UltimateProgram,
                                 start_block_idx: int,

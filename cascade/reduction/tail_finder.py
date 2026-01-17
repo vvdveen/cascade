@@ -6,6 +6,7 @@ using binary search.
 """
 
 import copy
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Optional, Tuple, List
 
@@ -47,6 +48,7 @@ class TailFinder:
         """Initialize tail finder."""
         self.config = config
         self.rtl_runner = rtl_runner
+        self.max_workers = max(1, config.num_workers)
 
     def find_tail(self, program: UltimateProgram) -> Optional[TailResult]:
         """
@@ -103,28 +105,18 @@ class TailFinder:
         # Find final block (the one with infinite loop)
         final_block = blocks[-1]
 
-        # Binary search
-        low, high = 0, n - 2  # Exclude final block
-        iterations = 0
+        # Parallel scan across candidate blocks.
+        candidates = []
+        for idx in range(0, n - 1):
+            modified = self._create_early_exit_program(program, idx, final_block)
+            candidates.append((idx, modified))
 
-        while low < high:
-            mid = (low + high) // 2
-            iterations += 1
+        results = self._run_candidates(candidates)
+        triggering = [idx for idx, bug in results.items() if bug]
+        if not triggering:
+            return None, len(candidates)
 
-            # Create modified program with early exit at mid
-            modified = self._create_early_exit_program(program, mid, final_block)
-
-            # Test if bug still triggers
-            result = self.rtl_runner.run(modified)
-
-            if result.bug_detected:
-                # Bug is in blocks 0..mid
-                high = mid
-            else:
-                # Bug is in blocks mid+1..high
-                low = mid + 1
-
-        return blocks[low], iterations
+        return blocks[min(triggering)], len(candidates)
 
     def _find_tail_instruction(self, program: UltimateProgram,
                               block: BasicBlock) -> Tuple[Optional[int], int]:
@@ -138,25 +130,17 @@ class TailFinder:
         if n <= 1:
             return 0 if n == 1 else None, 0
 
-        # Binary search within block
-        low, high = 0, n - 1
-        iterations = 0
+        candidates = []
+        for idx in range(0, n):
+            modified = self._create_instruction_exit_program(program, block, idx)
+            candidates.append((idx, modified))
 
-        while low < high:
-            mid = (low + high) // 2
-            iterations += 1
+        results = self._run_candidates(candidates)
+        triggering = [idx for idx, bug in results.items() if bug]
+        if not triggering:
+            return None, len(candidates)
 
-            # Create modified program with early exit at instruction mid
-            modified = self._create_instruction_exit_program(program, block, mid)
-
-            result = self.rtl_runner.run(modified)
-
-            if result.bug_detected:
-                high = mid
-            else:
-                low = mid + 1
-
-        return low, iterations
+        return min(triggering), len(candidates)
 
     def _create_early_exit_program(self, program: UltimateProgram,
                                    exit_block_idx: int,
@@ -241,3 +225,22 @@ class TailFinder:
             fallthrough_addr=block.fallthrough_addr,
             jump_target_addr=block.jump_target_addr
         )
+
+    def _run_candidates(self, candidates: List[Tuple[int, UltimateProgram]]) -> dict:
+        """Run RTL candidates in parallel and return bug map."""
+        results = {}
+        if self.max_workers <= 1 or len(candidates) <= 1:
+            for idx, program in candidates:
+                results[idx] = self.rtl_runner.run(program).bug_detected
+            return results
+
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            future_map = {executor.submit(self.rtl_runner.run, program): idx for idx, program in candidates}
+            for future in as_completed(future_map):
+                idx = future_map[future]
+                try:
+                    results[idx] = future.result().bug_detected
+                except Exception:
+                    results[idx] = False
+
+        return results
