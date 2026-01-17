@@ -13,6 +13,8 @@ INSTALL_PREFIX="${INSTALL_PREFIX:-/opt/riscv}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="${PROJECT_DIR}/deps"
+OS_NAME="$(uname -s)"
+ARCH_NAME="$(uname -m)"
 
 # Colors for output
 RED='\033[0;31m'
@@ -44,25 +46,54 @@ check_dependencies() {
         fi
     done
 
-    # libtool can be either 'libtool' or 'libtoolize' depending on distro
-    if ! command -v libtool &> /dev/null && ! command -v libtoolize &> /dev/null; then
-        missing+=("libtool")
+    if [ "$OS_NAME" = "Darwin" ]; then
+        if ! command -v glibtoolize &> /dev/null && ! command -v libtoolize &> /dev/null; then
+            missing+=("glibtoolize (brew libtool)")
+        fi
+    else
+        # libtool can be either 'libtool' or 'libtoolize' depending on distro
+        if ! command -v libtool &> /dev/null && ! command -v libtoolize &> /dev/null; then
+            missing+=("libtool")
+        fi
     fi
 
     if [ ${#missing[@]} -ne 0 ]; then
         log_error "Missing required tools: ${missing[*]}"
-        log_info "Install with: sudo apt-get install git build-essential autoconf automake libtool pkg-config"
+        if [ "$OS_NAME" = "Darwin" ]; then
+            log_info "Install with: brew install autoconf automake libtool pkg-config"
+        else
+            log_info "Install with: sudo apt-get install git build-essential autoconf automake libtool pkg-config"
+        fi
         exit 1
     fi
 
     log_info "All required tools found"
 }
 
+get_num_cores() {
+    if command -v nproc &> /dev/null; then
+        nproc
+    elif [ "$OS_NAME" = "Darwin" ]; then
+        sysctl -n hw.ncpu
+    else
+        echo 1
+    fi
+}
+
 # Install system dependencies (Debian/Ubuntu)
 install_system_deps() {
     log_info "Installing system dependencies..."
 
-    if command -v apt-get &> /dev/null; then
+    if [ "$OS_NAME" = "Darwin" ]; then
+        if ! command -v brew &> /dev/null; then
+            log_error "Homebrew not found. Install from https://brew.sh/ and re-run."
+            exit 1
+        fi
+
+        log_info "Using Homebrew for macOS dependencies..."
+        brew install autoconf automake libtool pkg-config \
+            boost dtc bison flex ccache gperftools
+    elif command -v apt-get &> /dev/null; then
         sudo apt-get update
         sudo apt-get install -y \
             git build-essential autoconf automake libtool \
@@ -104,8 +135,23 @@ install_spike() {
 
     log_info "Building Spike..."
     mkdir -p build && cd build
-    ../configure --prefix="$INSTALL_PREFIX"
-    make -j"$(nproc)"
+    local extra_config=()
+    if [ "$OS_NAME" = "Darwin" ] && command -v brew &> /dev/null; then
+        extra_config+=(--with-boost="$(brew --prefix boost)")
+    fi
+
+    if [ "$OS_NAME" = "Darwin" ]; then
+        local toolize_cmd="glibtoolize"
+        if ! command -v "$toolize_cmd" &> /dev/null; then
+            toolize_cmd="libtoolize"
+        fi
+        if command -v "$toolize_cmd" &> /dev/null; then
+            "$toolize_cmd" --copy --force > /dev/null 2>&1 || true
+        fi
+    fi
+
+    ../configure --prefix="$INSTALL_PREFIX" "${extra_config[@]}"
+    make -j"$(get_num_cores)"
     sudo make install
 
     log_info "Spike installed to $INSTALL_PREFIX"
@@ -125,6 +171,12 @@ install_verilator() {
         fi
     fi
 
+    if [ "$OS_NAME" = "Darwin" ] && command -v brew &> /dev/null; then
+        log_info "Installing Verilator via Homebrew..."
+        brew install verilator
+        return 0
+    fi
+
     mkdir -p "$BUILD_DIR"
     cd "$BUILD_DIR"
 
@@ -142,9 +194,12 @@ install_verilator() {
     git checkout v5.005 2>/dev/null || git checkout master
 
     log_info "Building Verilator..."
+    if [ "$OS_NAME" = "Darwin" ] && command -v brew &> /dev/null; then
+        export PATH="$(brew --prefix bison)/bin:$PATH"
+    fi
     autoconf
     ./configure --prefix="$INSTALL_PREFIX"
-    make -j"$(nproc)"
+    make -j"$(get_num_cores)"
     sudo make install
 
     log_info "Verilator installed to $INSTALL_PREFIX"
@@ -236,7 +291,7 @@ print_path_instructions() {
     echo ""
     echo "Then reload your shell or run:"
     echo ""
-    echo "  source ~/.bashrc"
+    echo "  source ~/.bashrc  # or ~/.zshrc"
     echo ""
     echo "To verify the installation:"
     echo ""

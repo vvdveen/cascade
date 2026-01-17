@@ -36,6 +36,21 @@ pip install -e ".[dev]"
 ./scripts/setup_deps.sh
 ```
 
+### macOS (Homebrew)
+
+```bash
+# Install Xcode Command Line Tools (if not already installed)
+xcode-select --install
+
+# Install dependencies
+brew install autoconf automake libtool pkg-config boost dtc bison flex ccache gperftools
+
+# Optional external tools (Spike from source, Verilator via Homebrew)
+# If setup_deps.sh reports missing autoconf/automake, install:
+# brew install autoconf automake libtool pkg-config
+./scripts/setup_deps.sh
+```
+
 ### Manual Installation
 
 1. **Install Spike (RISC-V ISS)**:
@@ -44,7 +59,7 @@ git clone https://github.com/riscv-software-src/riscv-isa-sim.git
 cd riscv-isa-sim
 mkdir build && cd build
 ../configure --prefix=/opt/riscv
-make -j$(nproc)
+make -j$(nproc)  # macOS: use `sysctl -n hw.ncpu`
 sudo make install
 ```
 
