@@ -84,7 +84,7 @@ class RTLRunner:
 
             # Write program as hex file for Verilog $readmemh
             hex_path = tmpdir / "program.hex"
-            write_hex(program, hex_path)
+            write_hex(program, hex_path, base_address=0)
 
             # Also write ELF for reference
             elf_path = tmpdir / "program.elf"
@@ -163,8 +163,8 @@ class RTLRunner:
 
         for binary in possible_binaries:
             if binary.exists():
-                self._sim_binary = binary
-                return binary
+                self._sim_binary = binary.resolve()
+                return self._sim_binary
 
         return None
 
@@ -191,6 +191,10 @@ class RTLRunner:
         # Look for completion indicator
         if 'PASS' in output or 'SUCCESS' in output or 'completed' in output.lower():
             result.success = True
+        elif 'TRAP' in output:
+            # PicoRV32 testbench uses TRAP on program completion.
+            result.success = True
+            result.bug_detected = False
         elif 'FAIL' in output or 'ERROR' in output:
             result.success = False
             result.bug_detected = True

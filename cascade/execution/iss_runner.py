@@ -8,6 +8,8 @@ Interfaces with Spike (riscv-isa-sim) to:
 """
 
 import subprocess
+import selectors
+import time
 import tempfile
 import re
 from dataclasses import dataclass, field
@@ -81,27 +83,31 @@ class ISSRunner:
             cmd = self._build_command(elf_path, collect_feedback)
 
             try:
-                # Run Spike
-                proc = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=self.config.iss_timeout / 1000.0  # Convert to seconds
-                )
-
-                result.raw_output = proc.stdout + proc.stderr
-                result.exit_code = proc.returncode
-
-                # Check for errors
-                if proc.returncode != 0:
-                    result.error_message = result.raw_output[:500] if result.raw_output else f"Exit code {proc.returncode}"
-                    result.success = False
-                else:
-                    result.success = True
-                    # Parse output
-                    if collect_feedback:
+                if collect_feedback:
+                    self._run_spike_with_early_exit(cmd, result)
+                    if result.success:
                         result.feedback = self._parse_feedback(result.raw_output, program)
-                result.instruction_count = self._count_instructions(result.raw_output)
+                else:
+                    proc = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=self.config.iss_timeout / 1000.0  # Convert to seconds
+                    )
+
+                    result.raw_output = proc.stdout + proc.stderr
+                    result.exit_code = proc.returncode
+
+                    # Check for errors
+                    if proc.returncode != 0:
+                        if self._is_expected_termination(result.raw_output):
+                            result.success = True
+                        else:
+                            result.error_message = result.raw_output[:500] if result.raw_output else f"Exit code {proc.returncode}"
+                            result.success = False
+                    else:
+                        result.success = True
+                    result.instruction_count = self._count_instructions(result.raw_output)
 
             except subprocess.TimeoutExpired as e:
                 result.timeout = True
@@ -123,6 +129,79 @@ class ISSRunner:
                 result.error_message = str(e)
 
         return result
+
+    def _is_expected_termination(self, output: str) -> bool:
+        """Treat trap/ebreak termination as success."""
+        if not output:
+            return False
+        lowered = output.lower()
+        return "ebreak" in lowered or "breakpoint" in lowered or "trap" in lowered
+
+    def _run_spike_with_early_exit(self, cmd: List[str], result: ISSResult) -> None:
+        """Run Spike and stop once termination is observed in the log."""
+        timeout_seconds = self.config.iss_timeout / 1000.0
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1
+        )
+
+        selector = selectors.DefaultSelector()
+        if proc.stdout:
+            selector.register(proc.stdout, selectors.EVENT_READ)
+        if proc.stderr:
+            selector.register(proc.stderr, selectors.EVENT_READ)
+
+        output_chunks: List[str] = []
+        deadline = time.time() + timeout_seconds
+        saw_termination = False
+
+        while True:
+            if proc.poll() is not None:
+                break
+            if time.time() >= deadline:
+                result.timeout = True
+                result.error_message = "ISS simulation timed out"
+                break
+
+            for key, _ in selector.select(timeout=0.1):
+                line = key.fileobj.readline()
+                if not line:
+                    continue
+                output_chunks.append(line)
+                if self._is_expected_termination(line):
+                    saw_termination = True
+                    proc.terminate()
+                    break
+            if saw_termination:
+                break
+
+        try:
+            remaining_out, remaining_err = proc.communicate(timeout=1)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            remaining_out, remaining_err = proc.communicate()
+
+        if remaining_out:
+            output_chunks.append(remaining_out)
+        if remaining_err:
+            output_chunks.append(remaining_err)
+
+        result.raw_output = "".join(output_chunks)
+        result.exit_code = proc.returncode or 0
+        result.instruction_count = self._count_instructions(result.raw_output)
+
+        if result.timeout:
+            result.success = False
+            return
+
+        if proc.returncode == 0 or saw_termination or self._is_expected_termination(result.raw_output):
+            result.success = True
+        else:
+            result.success = False
+            result.error_message = result.raw_output[:500] if result.raw_output else f"Exit code {proc.returncode}"
 
     def _build_command(self, elf_path: Path, trace: bool = False) -> List[str]:
         """Build Spike command line."""

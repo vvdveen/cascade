@@ -17,6 +17,7 @@ from ..isa.instructions import (
     get_instructions_by_category, get_hopping_instructions,
     LUI, ADDI, ADD, XOR, JAL, JALR, BEQ, BNE, BLT, BGE, BLTU, BGEU,
     LW, SW, LB, LH, LBU, LHU, SB, SH,
+    EBREAK,
 )
 from ..isa.encoding import EncodedInstruction
 from .memory_manager import MemoryManager
@@ -488,11 +489,11 @@ class BasicBlockGenerator:
         """
         Generate the final basic block.
 
-        Signals completion (infinite loop or ecall).
+        Signals completion with a trap (ebreak).
         """
         block = BasicBlock(start_addr=start_addr, block_id=block_id)
 
-        # Simple infinite loop: j .
-        block.terminator = EncodedInstruction(JAL, rd=0, imm=0)
+        # Terminate by triggering a trap so ISS/RTL can stop.
+        block.terminator = EncodedInstruction(EBREAK)
 
         return block

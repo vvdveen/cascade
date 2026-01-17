@@ -410,7 +410,8 @@ def write_raw_binary(program: Union[IntermediateProgram, UltimateProgram],
 
 
 def write_hex(program: Union[IntermediateProgram, UltimateProgram],
-              output_path: Path, words_per_line: int = 1) -> None:
+              output_path: Path, words_per_line: int = 1,
+              base_address: Optional[int] = None) -> None:
     """
     Write program as hex file (for Verilog $readmemh).
 
@@ -424,7 +425,8 @@ def write_hex(program: Union[IntermediateProgram, UltimateProgram],
 
     with open(output_path, 'w') as f:
         # Write address at start
-        f.write(f"@{program.code_start >> 2:08X}\n")
+        start_addr = program.code_start if base_address is None else base_address
+        f.write(f"@{start_addr >> 2:08X}\n")
 
         # Write data
         for i in range(0, len(data), 4 * words_per_line):
