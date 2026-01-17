@@ -38,6 +38,15 @@ PF_X = 0x1  # Execute
 PF_W = 0x2  # Write
 PF_R = 0x4  # Read
 
+# Section header types
+SHT_NULL = 0
+SHT_PROGBITS = 1
+SHT_STRTAB = 3
+
+# Section header flags
+SHF_ALLOC = 0x2
+SHF_EXECINSTR = 0x4
+
 
 @dataclass
 class ELFHeader:
@@ -132,13 +141,13 @@ class ELFWriter:
 
         # We have one program header (for code)
         num_phdrs = 1
-        num_shdrs = 2  # Null + shstrtab
+        num_shdrs = 3  # Null + .text + shstrtab
 
         # Calculate offsets
         phdr_offset = ehdr_size
         shdr_offset = ehdr_size + (phdr_size * num_phdrs)
+        shstrtab_data = b'\x00.text\x00.shstrtab\x00'
         shstrtab_offset = shdr_offset + (shdr_size * num_shdrs)
-        shstrtab_data = b'\x00'
         code_offset = shstrtab_offset + len(shstrtab_data)
 
         # Align code to page boundary
@@ -151,7 +160,7 @@ class ELFWriter:
             phnum=num_phdrs,
             shoff=shdr_offset,
             shnum=num_shdrs,
-            shstrndx=1  # shstrtab section index
+            shstrndx=2  # shstrtab section index
         )
 
         # Build program header for code
@@ -169,7 +178,7 @@ class ELFWriter:
         # Build section headers
         shdr_null = self._build_shdr32(
             sh_name=0,
-            sh_type=0,
+            sh_type=SHT_NULL,
             sh_flags=0,
             sh_addr=0,
             sh_offset=0,
@@ -179,9 +188,21 @@ class ELFWriter:
             sh_addralign=0,
             sh_entsize=0
         )
+        shdr_text = self._build_shdr32(
+            sh_name=1,  # ".text"
+            sh_type=SHT_PROGBITS,
+            sh_flags=SHF_ALLOC | SHF_EXECINSTR,
+            sh_addr=load_addr,
+            sh_offset=code_offset,
+            sh_size=len(code),
+            sh_link=0,
+            sh_info=0,
+            sh_addralign=4,
+            sh_entsize=0
+        )
         shdr_shstrtab = self._build_shdr32(
-            sh_name=0,
-            sh_type=3,  # SHT_STRTAB
+            sh_name=7,  # ".shstrtab"
+            sh_type=SHT_STRTAB,
             sh_flags=0,
             sh_addr=0,
             sh_offset=shstrtab_offset,
@@ -197,6 +218,7 @@ class ELFWriter:
         elf.extend(ehdr)
         elf.extend(phdr)
         elf.extend(shdr_null)
+        elf.extend(shdr_text)
         elf.extend(shdr_shstrtab)
         elf.extend(shstrtab_data)
 
@@ -213,16 +235,24 @@ class ELFWriter:
         # ELF header size
         ehdr_size = 64
         phdr_size = 56
+        shdr_size = 64
 
         num_phdrs = 1
+        num_shdrs = 3  # Null + .text + shstrtab
         phdr_offset = ehdr_size
-        code_offset = ehdr_size + (phdr_size * num_phdrs)
+        shdr_offset = ehdr_size + (phdr_size * num_phdrs)
+        shstrtab_data = b'\x00.text\x00.shstrtab\x00'
+        shstrtab_offset = shdr_offset + (shdr_size * num_shdrs)
+        code_offset = shstrtab_offset + len(shstrtab_data)
         code_offset = (code_offset + 0xFFF) & ~0xFFF
 
         ehdr = self._build_elf64_header(
             entry=entry,
             phoff=phdr_offset,
-            phnum=num_phdrs
+            phnum=num_phdrs,
+            shoff=shdr_offset,
+            shnum=num_shdrs,
+            shstrndx=2
         )
 
         phdr = self._build_phdr64(
@@ -236,9 +266,50 @@ class ELFWriter:
             p_align=0x1000
         )
 
+        shdr_null = self._build_shdr64(
+            sh_name=0,
+            sh_type=SHT_NULL,
+            sh_flags=0,
+            sh_addr=0,
+            sh_offset=0,
+            sh_size=0,
+            sh_link=0,
+            sh_info=0,
+            sh_addralign=0,
+            sh_entsize=0
+        )
+        shdr_text = self._build_shdr64(
+            sh_name=1,  # ".text"
+            sh_type=SHT_PROGBITS,
+            sh_flags=SHF_ALLOC | SHF_EXECINSTR,
+            sh_addr=load_addr,
+            sh_offset=code_offset,
+            sh_size=len(code),
+            sh_link=0,
+            sh_info=0,
+            sh_addralign=4,
+            sh_entsize=0
+        )
+        shdr_shstrtab = self._build_shdr64(
+            sh_name=7,  # ".shstrtab"
+            sh_type=SHT_STRTAB,
+            sh_flags=0,
+            sh_addr=0,
+            sh_offset=shstrtab_offset,
+            sh_size=len(shstrtab_data),
+            sh_link=0,
+            sh_info=0,
+            sh_addralign=1,
+            sh_entsize=0
+        )
+
         elf = bytearray()
         elf.extend(ehdr)
         elf.extend(phdr)
+        elf.extend(shdr_null)
+        elf.extend(shdr_text)
+        elf.extend(shdr_shstrtab)
+        elf.extend(shstrtab_data)
         elf.extend(b'\x00' * (code_offset - len(elf)))
         elf.extend(code)
 
@@ -298,7 +369,8 @@ class ELFWriter:
 
         return bytes(ehdr)
 
-    def _build_elf64_header(self, entry: int, phoff: int, phnum: int) -> bytes:
+    def _build_elf64_header(self, entry: int, phoff: int, phnum: int,
+                            shoff: int = 0, shnum: int = 0, shstrndx: int = 0) -> bytes:
         """Build 64-bit ELF header."""
         ehdr = bytearray()
 
@@ -326,7 +398,7 @@ class ELFWriter:
         ehdr.extend(struct.pack('<Q', phoff))
 
         # e_shoff (8 bytes)
-        ehdr.extend(struct.pack('<Q', 0))
+        ehdr.extend(struct.pack('<Q', shoff))
 
         # e_flags
         ehdr.extend(struct.pack('<I', 0))
@@ -341,13 +413,13 @@ class ELFWriter:
         ehdr.extend(struct.pack('<H', phnum))
 
         # e_shentsize
-        ehdr.extend(struct.pack('<H', 0))
+        ehdr.extend(struct.pack('<H', 64 if shnum > 0 else 0))
 
         # e_shnum
-        ehdr.extend(struct.pack('<H', 0))
+        ehdr.extend(struct.pack('<H', shnum))
 
         # e_shstrndx
-        ehdr.extend(struct.pack('<H', 0))
+        ehdr.extend(struct.pack('<H', shstrndx))
 
         return bytes(ehdr)
 
@@ -395,6 +467,23 @@ class ELFWriter:
                            p_filesz,
                            p_memsz,
                            p_align)
+
+    def _build_shdr64(self, sh_name: int, sh_type: int, sh_flags: int,
+                      sh_addr: int, sh_offset: int, sh_size: int,
+                      sh_link: int, sh_info: int, sh_addralign: int,
+                      sh_entsize: int) -> bytes:
+        """Build 64-bit section header."""
+        return struct.pack('<IIQQQQIIQQ',
+                           sh_name,
+                           sh_type,
+                           sh_flags,
+                           sh_addr,
+                           sh_offset,
+                           sh_size,
+                           sh_link,
+                           sh_info,
+                           sh_addralign,
+                           sh_entsize)
 
 
 def write_raw_binary(program: Union[IntermediateProgram, UltimateProgram],
