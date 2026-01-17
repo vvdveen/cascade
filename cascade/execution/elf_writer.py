@@ -132,12 +132,14 @@ class ELFWriter:
 
         # We have one program header (for code)
         num_phdrs = 1
-        num_shdrs = 1  # Just the null section header (required by some loaders)
+        num_shdrs = 2  # Null + shstrtab
 
         # Calculate offsets
         phdr_offset = ehdr_size
         shdr_offset = ehdr_size + (phdr_size * num_phdrs)
-        code_offset = shdr_offset + (shdr_size * num_shdrs)
+        shstrtab_offset = shdr_offset + (shdr_size * num_shdrs)
+        shstrtab_data = b'\x00'
+        code_offset = shstrtab_offset + len(shstrtab_data)
 
         # Align code to page boundary
         code_offset = (code_offset + 0xFFF) & ~0xFFF
@@ -149,7 +151,7 @@ class ELFWriter:
             phnum=num_phdrs,
             shoff=shdr_offset,
             shnum=num_shdrs,
-            shstrndx=0  # SHN_UNDEF - no section name string table
+            shstrndx=1  # shstrtab section index
         )
 
         # Build program header for code
@@ -164,14 +166,39 @@ class ELFWriter:
             p_align=0x1000
         )
 
-        # Build null section header (required as first entry)
-        shdr_null = self._build_shdr32_null()
+        # Build section headers
+        shdr_null = self._build_shdr32(
+            sh_name=0,
+            sh_type=0,
+            sh_flags=0,
+            sh_addr=0,
+            sh_offset=0,
+            sh_size=0,
+            sh_link=0,
+            sh_info=0,
+            sh_addralign=0,
+            sh_entsize=0
+        )
+        shdr_shstrtab = self._build_shdr32(
+            sh_name=0,
+            sh_type=3,  # SHT_STRTAB
+            sh_flags=0,
+            sh_addr=0,
+            sh_offset=shstrtab_offset,
+            sh_size=len(shstrtab_data),
+            sh_link=0,
+            sh_info=0,
+            sh_addralign=1,
+            sh_entsize=0
+        )
 
         # Assemble ELF
         elf = bytearray()
         elf.extend(ehdr)
         elf.extend(phdr)
         elf.extend(shdr_null)
+        elf.extend(shdr_shstrtab)
+        elf.extend(shstrtab_data)
 
         # Pad to code offset
         elf.extend(b'\x00' * (code_offset - len(elf)))
@@ -180,10 +207,6 @@ class ELFWriter:
         elf.extend(code)
 
         return bytes(elf)
-
-    def _build_shdr32_null(self) -> bytes:
-        """Build null section header (all zeros, 40 bytes)."""
-        return b'\x00' * 40
 
     def _build_elf64(self, code: bytes, entry: int, load_addr: int) -> bytes:
         """Build 64-bit ELF file."""
@@ -341,6 +364,23 @@ class ELFWriter:
                            p_memsz,
                            p_flags,
                            p_align)
+
+    def _build_shdr32(self, sh_name: int, sh_type: int, sh_flags: int,
+                      sh_addr: int, sh_offset: int, sh_size: int,
+                      sh_link: int, sh_info: int, sh_addralign: int,
+                      sh_entsize: int) -> bytes:
+        """Build 32-bit section header."""
+        return struct.pack('<IIIIIIIIII',
+                           sh_name,
+                           sh_type,
+                           sh_flags,
+                           sh_addr,
+                           sh_offset,
+                           sh_size,
+                           sh_link,
+                           sh_info,
+                           sh_addralign,
+                           sh_entsize)
 
     def _build_phdr64(self, p_type: int, p_offset: int, p_vaddr: int,
                       p_paddr: int, p_filesz: int, p_memsz: int,

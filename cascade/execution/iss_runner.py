@@ -103,9 +103,18 @@ class ISSRunner:
                         result.feedback = self._parse_feedback(result.raw_output, program)
                 result.instruction_count = self._count_instructions(result.raw_output)
 
-            except subprocess.TimeoutExpired:
+            except subprocess.TimeoutExpired as e:
                 result.timeout = True
                 result.error_message = "ISS simulation timed out"
+                stdout = e.stdout or ""
+                stderr = e.stderr or ""
+                if isinstance(stdout, bytes):
+                    stdout = stdout.decode(errors="replace")
+                if isinstance(stderr, bytes):
+                    stderr = stderr.decode(errors="replace")
+                result.raw_output = stdout + stderr
+                if not collect_feedback:
+                    result.success = True
 
             except FileNotFoundError:
                 result.error_message = f"Spike not found at {self.spike_path}"
