@@ -34,6 +34,12 @@ pip install -e ".[dev]"
 
 # (Optional) Install external tools (Spike, Verilator, PicoRV32)
 ./scripts/setup_deps.sh
+
+# (Optional) Build PicoRV32 RTL model (Verilator)
+make -C deps/picorv32 testbench_verilator
+
+# Run with the RTL model
+cascade -n 10 --cpu picorv32 --rtl-path deps/picorv32
 ```
 
 ### macOS (Homebrew)
@@ -53,6 +59,22 @@ brew install autoconf automake libtool pkg-config boost dtc bison flex ccache gp
 # If /opt/riscv is not writable, use sudo or a user-writable prefix:
 # sudo ./scripts/setup_deps.sh
 # INSTALL_PREFIX="$HOME/.local/riscv" ./scripts/setup_deps.sh
+
+# Build PicoRV32 RTL model (Verilator)
+make -C deps/picorv32 testbench_verilator
+
+# Run with the RTL model
+cascade -n 10 --cpu picorv32 --rtl-path deps/picorv32
+```
+
+### Build PicoRV32 RTL Model (Verilator)
+
+```bash
+# Build the PicoRV32 Verilator testbench
+make -C deps/picorv32 testbench_verilator
+
+# Run Cascade with the built RTL model
+cascade -n 10 --cpu picorv32 --rtl-path deps/picorv32
 ```
 
 ### Manual Installation

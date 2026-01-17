@@ -157,6 +157,8 @@ class RTLRunner:
             self.rtl_model_path / "obj_dir" / "Vtestbench",
             self.rtl_model_path / "build" / "sim",
             self.rtl_model_path / "sim" / "testbench",
+            self.rtl_model_path / "testbench_verilator",
+            self.rtl_model_path / "testbench_verilator_dir" / "Vpicorv32_wrapper",
         ]
 
         for binary in possible_binaries:
