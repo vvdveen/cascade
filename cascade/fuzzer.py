@@ -211,7 +211,8 @@ class Fuzzer:
     def _fuzz_parallel(self, num_programs: int) -> None:
         """Run fuzzing with multiple workers."""
         ctx = multiprocessing.get_context("spawn")
-        progress_queue: multiprocessing.Queue = ctx.Queue()
+        manager = multiprocessing.Manager()
+        progress_queue: multiprocessing.Queue = manager.Queue()
 
         worker_counts = _split_work(num_programs, self.config.num_workers)
         worker_totals = {worker_id: count for worker_id, count in enumerate(worker_counts)}
@@ -252,6 +253,13 @@ class Fuzzer:
                 if now - last_print >= 0.2 or completed == num_programs:
                     self._print_progress(completed, executed, num_programs, worker_done, worker_totals)
                     last_print = now
+
+                if all(f.done() for f in futures):
+                    for future in futures:
+                        exc = future.exception()
+                        if exc:
+                            raise exc
+                    break
 
             print()
 
