@@ -327,11 +327,13 @@ class Fuzzer:
         ultimate_path = bug_dir / "ultimate.elf"
         intermediate_path = bug_dir / "intermediate.elf"
         ultimate_asm_path = bug_dir / "ultimate.S"
+        rerun_script_path = bug_dir / "rerun_rtl.sh"
 
         self.elf_writer.write(ultimate, ultimate_path)
         self.elf_writer.write(intermediate, intermediate_path)
         with open(ultimate_asm_path, "w") as asm_file:
             asm_file.write(self._format_program_asm(ultimate))
+        self._write_rerun_script(rerun_script_path, intermediate.descriptor.seed if intermediate.descriptor else 0)
 
         # Save metadata
         meta_path = bug_dir / "metadata.txt"
@@ -365,6 +367,23 @@ class Fuzzer:
                 lines.append(f"0x{pc:08x}: {block.terminator.to_asm()}")
             lines.append("")
         return "\n".join(lines).rstrip() + "\n"
+
+    def _write_rerun_script(self, script_path: Path, seed: int) -> None:
+        """Write a helper script to re-run the RTL simulator for a bug."""
+        spike_path = self.config.spike_path
+        rtl_path = self.config.rtl_model_path or Path("deps/picorv32")
+        script = (
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "\n"
+            f'export PATH="{spike_path.parent}:$PATH"\n'
+            f'cascade -n 1 --cpu {self.config.cpu.name} '
+            f'--seed {seed} '
+            f'--spike-path "{spike_path}" '
+            f'--rtl-path "{rtl_path}"\n'
+        )
+        script_path.write_text(script)
+        script_path.chmod(0o755)
 
     def _log_progress(self) -> None:
         """Log current progress."""
