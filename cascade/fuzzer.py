@@ -9,6 +9,11 @@ import argparse
 import logging
 import sys
 import time
+import multiprocessing
+import queue
+import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from typing import Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -167,21 +172,92 @@ class Fuzzer:
         self.stats.start_time = datetime.now()
         self.bugs = []
 
-        for i in range(num_programs):
-            try:
-                self._fuzz_iteration(i)
-            except Exception as e:
-                logger.error(f"Error in iteration {i}: {e}")
-                continue
-
-            # Log progress
-            if (i + 1) % 100 == 0:
-                self._log_progress()
+        if self.config.num_workers > 1:
+            self._fuzz_parallel(num_programs)
+        else:
+            self._fuzz_serial(num_programs)
 
         self.stats.end_time = datetime.now()
         self._log_final_stats()
 
         return self.bugs
+
+    def _fuzz_serial(self, num_programs: int) -> None:
+        """Run fuzzing serially with progress updates."""
+        last_print = time.time()
+        completed = 0
+        executed = 0
+        for i in range(num_programs):
+            try:
+                prev_executed = self.stats.programs_executed
+                self._fuzz_iteration(i)
+                executed += self.stats.programs_executed - prev_executed
+            except Exception as e:
+                logger.error(f"Error in iteration {i}: {e}")
+            completed += 1
+
+            now = time.time()
+            if now - last_print >= 0.2 or (i + 1) == num_programs:
+                self._print_progress(
+                    completed,
+                    executed,
+                    num_programs,
+                    {0: i + 1},
+                    {0: num_programs},
+                )
+                last_print = now
+        print()
+
+    def _fuzz_parallel(self, num_programs: int) -> None:
+        """Run fuzzing with multiple workers."""
+        ctx = multiprocessing.get_context("spawn")
+        progress_queue: multiprocessing.Queue = ctx.Queue()
+
+        worker_counts = _split_work(num_programs, self.config.num_workers)
+        worker_totals = {worker_id: count for worker_id, count in enumerate(worker_counts)}
+        worker_done = {worker_id: 0 for worker_id in worker_totals}
+
+        futures = []
+        start_index = 0
+        with ProcessPoolExecutor(max_workers=self.config.num_workers, mp_context=ctx) as executor:
+            for worker_id, count in enumerate(worker_counts):
+                if count == 0:
+                    continue
+                futures.append(
+                    executor.submit(
+                        _worker_fuzz,
+                        self.config,
+                        start_index,
+                        count,
+                        worker_id,
+                        progress_queue,
+                    )
+                )
+                start_index += count
+
+            completed = 0
+            executed = 0
+            last_print = time.time()
+            while completed < num_programs:
+                try:
+                    worker_id, executed_delta = progress_queue.get(timeout=0.1)
+                    if worker_id in worker_done:
+                        worker_done[worker_id] += 1
+                        completed += 1
+                        executed += executed_delta
+                except queue.Empty:
+                    pass
+
+                now = time.time()
+                if now - last_print >= 0.2 or completed == num_programs:
+                    self._print_progress(completed, executed, num_programs, worker_done, worker_totals)
+                    last_print = now
+
+            print()
+
+            for future in as_completed(futures):
+                worker_stats, worker_bugs = future.result()
+                self._merge_worker_stats(worker_stats, worker_bugs)
 
     def _fuzz_iteration(self, iteration: int) -> None:
         """Run a single fuzzing iteration."""
@@ -282,6 +358,64 @@ class Fuzzer:
         logger.info(f"Duration: {self.stats.duration:.1f}s")
         logger.info(f"Rate: {self.stats.programs_per_second:.1f} programs/second")
 
+    def _merge_worker_stats(self, worker_stats: FuzzerStats, worker_bugs: List[BugReport]) -> None:
+        """Merge worker stats and bug reports into this fuzzer's stats."""
+        self.stats.programs_generated += worker_stats.programs_generated
+        self.stats.programs_executed += worker_stats.programs_executed
+        self.stats.bugs_found += worker_stats.bugs_found
+        self.stats.iss_errors += worker_stats.iss_errors
+        self.stats.rtl_errors += worker_stats.rtl_errors
+        self.bugs.extend(worker_bugs)
+
+    def _print_progress(self, completed: int, executed: int, total: int,
+                        per_worker_done: dict, per_worker_total: dict) -> None:
+        """Print progress bars for overall and per-worker runs."""
+        overall = _format_bar(executed, total)
+        worker_parts = []
+        for worker_id in sorted(per_worker_total.keys()):
+            done = per_worker_done.get(worker_id, 0)
+            total_worker = per_worker_total[worker_id]
+            worker_parts.append(f"W{worker_id} { _format_bar(done, total_worker, width=10) }")
+        line = f"\rOverall {overall} done {completed}/{total}  " + "  ".join(worker_parts)
+        print(line, end="", flush=True)
+
+
+def _format_bar(done: int, total: int, width: int = 20) -> str:
+    """Format a simple ASCII progress bar."""
+    if total <= 0:
+        return f"[{'#' * width}] 0/0"
+    filled = int(width * done / total)
+    return f"[{'#' * filled}{'.' * (width - filled)}] {done}/{total}"
+
+
+def _split_work(total: int, workers: int) -> List[int]:
+    """Split work across workers as evenly as possible."""
+    if workers <= 0:
+        return [total]
+    base = total // workers
+    remainder = total % workers
+    return [base + (1 if i < remainder else 0) for i in range(workers)]
+
+
+def _worker_fuzz(config: FuzzerConfig, start_index: int, count: int,
+                 worker_id: int, progress_queue: multiprocessing.Queue) -> Tuple[FuzzerStats, List[BugReport]]:
+    """Worker process entrypoint for parallel fuzzing."""
+    fuzzer = Fuzzer(config)
+    fuzzer.stats = FuzzerStats()
+    fuzzer.bugs = []
+
+    for i in range(count):
+        iteration = start_index + i
+        try:
+            prev_executed = fuzzer.stats.programs_executed
+            fuzzer._fuzz_iteration(iteration)
+        except Exception as e:
+            logger.error(f"Worker {worker_id} error at iteration {iteration}: {e}")
+        executed_delta = fuzzer.stats.programs_executed - prev_executed
+        progress_queue.put((worker_id, executed_delta))
+
+    return fuzzer.stats, fuzzer.bugs
+
 
 def main():
     """Command-line entry point."""
@@ -340,6 +474,12 @@ def main():
         action="store_true",
         help="Only run calibration, don't fuzz"
     )
+    parser.add_argument(
+        "-j", "--workers",
+        type=int,
+        default=(os.cpu_count() or 1),
+        help="Number of parallel workers"
+    )
 
     args = parser.parse_args()
 
@@ -365,6 +505,7 @@ def main():
         spike_path=args.spike_path,
         rtl_model_path=args.rtl_path,
         seed=args.seed,
+        num_workers=args.workers,
     )
 
     # Create and run fuzzer
