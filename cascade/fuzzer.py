@@ -305,11 +305,18 @@ class Fuzzer:
 
         # 5. Check for bugs
         if rtl_result.bug_detected:
-            reduction = self.reducer.reduce(ultimate, iss_result.feedback)
-            bug = self._report_bug(iteration, intermediate, ultimate, rtl_result, reduction)
-            self.bugs.append(bug)
             self.stats.bugs_found += 1
-            logger.info(f"Bug detected! ID: {bug.bug_id}")
+            reduction = None
+            try:
+                reduction = self.reducer.reduce(ultimate, iss_result.feedback)
+            except Exception as e:
+                logger.error(f"Reduction failed at iteration {iteration}: {e}")
+            try:
+                bug = self._report_bug(iteration, intermediate, ultimate, rtl_result, reduction)
+                self.bugs.append(bug)
+                logger.info(f"Bug detected! ID: {bug.bug_id}")
+            except Exception as e:
+                logger.error(f"Failed to save bug artifacts at iteration {iteration}: {e}")
 
         if not rtl_result.success and not rtl_result.bug_detected:
             self.stats.rtl_errors += 1
