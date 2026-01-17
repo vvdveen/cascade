@@ -49,6 +49,10 @@ brew install autoconf automake libtool pkg-config boost dtc bison flex ccache gp
 # If setup_deps.sh reports missing autoconf/automake, install:
 # brew install autoconf automake libtool pkg-config
 ./scripts/setup_deps.sh
+
+# If /opt/riscv is not writable, use sudo or a user-writable prefix:
+# sudo ./scripts/setup_deps.sh
+# INSTALL_PREFIX="$HOME/.local/riscv" ./scripts/setup_deps.sh
 ```
 
 ### Manual Installation

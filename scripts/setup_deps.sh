@@ -15,6 +15,7 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="${PROJECT_DIR}/deps"
 OS_NAME="$(uname -s)"
 ARCH_NAME="$(uname -m)"
+SUDO_CMD="sudo"
 
 # Colors for output
 RED='\033[0;31m'
@@ -32,6 +33,40 @@ log_warn() {
 
 log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
+}
+
+ensure_install_prefix_writable() {
+    if [ -d "$INSTALL_PREFIX" ] && [ -w "$INSTALL_PREFIX" ]; then
+        SUDO_CMD=""
+        return 0
+    fi
+
+    if [ "$OS_NAME" = "Darwin" ]; then
+        if [ ! -d "$INSTALL_PREFIX" ]; then
+            mkdir -p "$INSTALL_PREFIX" 2>/dev/null || true
+        fi
+        if [ -d "$INSTALL_PREFIX" ] && [ -w "$INSTALL_PREFIX" ]; then
+            SUDO_CMD=""
+            return 0
+        fi
+        if command -v sudo &> /dev/null; then
+            if sudo -n true &> /dev/null; then
+                SUDO_CMD="sudo"
+                return 0
+            fi
+        fi
+        log_error "INSTALL_PREFIX is not writable: $INSTALL_PREFIX"
+        log_info "Re-run with sudo or set INSTALL_PREFIX to a writable path (e.g., \$HOME/.local/riscv)."
+        exit 1
+    fi
+}
+
+run_make_install() {
+    if [ -n "$SUDO_CMD" ]; then
+        $SUDO_CMD make install
+    else
+        make install
+    fi
 }
 
 # Check for required tools
@@ -116,6 +151,7 @@ install_system_deps() {
 # Install Spike (RISC-V ISS)
 install_spike() {
     log_info "Installing Spike ISS..."
+    ensure_install_prefix_writable
 
     mkdir -p "$BUILD_DIR"
     cd "$BUILD_DIR"
@@ -152,7 +188,7 @@ install_spike() {
 
     ../configure --prefix="$INSTALL_PREFIX" "${extra_config[@]}"
     make -j"$(get_num_cores)"
-    sudo make install
+    run_make_install
 
     log_info "Spike installed to $INSTALL_PREFIX"
 }
@@ -160,6 +196,7 @@ install_spike() {
 # Install Verilator
 install_verilator() {
     log_info "Installing Verilator..."
+    ensure_install_prefix_writable
 
     # Check if already installed and version >= 5
     if command -v verilator &> /dev/null; then
@@ -200,7 +237,7 @@ install_verilator() {
     autoconf
     ./configure --prefix="$INSTALL_PREFIX"
     make -j"$(get_num_cores)"
-    sudo make install
+    run_make_install
 
     log_info "Verilator installed to $INSTALL_PREFIX"
 }
