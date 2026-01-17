@@ -326,9 +326,12 @@ class Fuzzer:
         # Save programs
         ultimate_path = bug_dir / "ultimate.elf"
         intermediate_path = bug_dir / "intermediate.elf"
+        ultimate_asm_path = bug_dir / "ultimate.S"
 
         self.elf_writer.write(ultimate, ultimate_path)
         self.elf_writer.write(intermediate, intermediate_path)
+        with open(ultimate_asm_path, "w") as asm_file:
+            asm_file.write(self._format_program_asm(ultimate))
 
         # Save metadata
         meta_path = bug_dir / "metadata.txt"
@@ -348,6 +351,20 @@ class Fuzzer:
             cycle_count=rtl_result.cycle_count,
             description=rtl_result.error_message
         )
+
+    def _format_program_asm(self, program: UltimateProgram) -> str:
+        """Format ultimate program as simple assembly listing."""
+        lines = []
+        for block in sorted(program.blocks, key=lambda b: b.start_addr):
+            lines.append(f"# block {block.block_id} @ 0x{block.start_addr:08x}")
+            pc = block.start_addr
+            for instr in block.instructions:
+                lines.append(f"0x{pc:08x}: {instr.to_asm()}")
+                pc += 4
+            if block.terminator:
+                lines.append(f"0x{pc:08x}: {block.terminator.to_asm()}")
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
 
     def _log_progress(self) -> None:
         """Log current progress."""

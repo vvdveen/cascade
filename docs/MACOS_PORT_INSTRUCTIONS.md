@@ -148,6 +148,24 @@ cascade -n 10 --cpu picorv32 --spike-path /opt/homebrew/bin/spike
 
 ---
 
+## Disassembling Bug Artifacts (objdump)
+
+To disassemble `ultimate.elf` for a bug:
+
+```bash
+riscv32-unknown-elf-objdump -d output/bugs/<bug_id>/ultimate.elf
+```
+
+On macOS, install the RISC-V toolchain via Homebrew:
+
+```bash
+brew install riscv-gnu-toolchain
+```
+
+If your Homebrew package only provides `riscv64-unknown-elf-objdump`, use that instead.
+
+---
+
 ## Expected Deliverables
 
 1. Modified `scripts/setup_deps.sh` that works on macOS (Homebrew)
