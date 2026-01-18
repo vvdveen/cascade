@@ -400,22 +400,32 @@ class Fuzzer:
     def _append_trace_summary(self, bug_dir: Path, trace_dir: Path) -> None:
         """Append PC trace summary from VCD to metadata."""
         vcd_path = trace_dir / "testbench.vcd"
-        if not vcd_path.exists():
-            return
-        pcs = self._extract_pc_trace(vcd_path, max_entries=None)
+        pcs = []
+        source = "unknown"
+        if vcd_path.exists():
+            pcs, source = self._extract_pc_trace(vcd_path, max_entries=None)
         if not pcs:
+            trace_path = trace_dir / "testbench.trace"
+            if trace_path.exists():
+                pcs = self._extract_pc_trace_from_tracefile(trace_path)
+                source = "testbench.trace"
+        if not pcs:
+            meta_path = bug_dir / "metadata.txt"
+            with open(meta_path, "a") as f:
+                f.write("PC trace: unavailable\n")
             return
         meta_path = bug_dir / "metadata.txt"
         with open(meta_path, "a") as f:
-            f.write("PC trace (all):\n")
+            f.write(f"PC trace (all, source={source}):\n")
             f.write(", ".join(f"0x{pc:08x}" for pc in pcs) + "\n")
 
-    def _extract_pc_trace(self, vcd_path: Path, max_entries: Optional[int] = 64) -> List[int]:
-        """Extract PC samples from VCD (rvfi_pc_wdata) if available."""
-        signal_id = None
+    def _extract_pc_trace(self, vcd_path: Path,
+                          max_entries: Optional[int] = 64) -> Tuple[List[int], str]:
+        """Extract PC samples from VCD (rvfi_pc_wdata, reg_pc, trace_data, or mem_axi_araddr)."""
+        candidates = {}
         in_header = True
 
-        def parse_value(line: str) -> Optional[int]:
+        def parse_value(line: str, signal_id: str, signal_kind: str) -> Optional[int]:
             line = line.strip()
             if not line:
                 return None
@@ -428,7 +438,10 @@ class Fuzzer:
                     return None
                 if any(ch in "xXzZ" for ch in bits):
                     return None
-                return int(bits, 2)
+                value = int(bits, 2)
+                if signal_kind == "trace":
+                    return value & 0xFFFFFFFF
+                return value
             if line.startswith("h"):
                 parts = line[1:].split()
                 if len(parts) != 2:
@@ -446,31 +459,84 @@ class Fuzzer:
                 return int(line[0], 2)
             return None
 
-        pcs: List[int] = []
+        def read_pcs(signal_id: str, signal_kind: str) -> List[int]:
+            pcs_local: List[int] = []
+            with vcd_path.open("r", errors="replace") as vcd_file:
+                header_done = False
+                for line in vcd_file:
+                    if not header_done:
+                        if line.lstrip().startswith("$enddefinitions"):
+                            header_done = True
+                        continue
+                    value = parse_value(line, signal_id, signal_kind)
+                    if value is None:
+                        continue
+                    pcs_local.append(value)
+                    if max_entries is not None and len(pcs_local) > max_entries:
+                        pcs_local = pcs_local[-max_entries:]
+            return pcs_local
+
+        source = "unknown"
         with vcd_path.open("r", errors="replace") as vcd_file:
             for line in vcd_file:
                 if in_header:
-                    if line.startswith("$var"):
-                        parts = line.split()
+                    stripped = line.lstrip()
+                    if stripped.startswith("$var"):
+                        parts = stripped.split()
                         if len(parts) >= 5:
                             ident = parts[3]
                             name = parts[4]
                             if name.endswith("rvfi_pc_wdata"):
-                                signal_id = ident
-                    elif line.startswith("$enddefinitions"):
+                                candidates["rvfi_pc_wdata"] = ident
+                            elif name.endswith("reg_pc"):
+                                candidates["reg_pc"] = ident
+                            elif name.endswith("mem_axi_araddr"):
+                                candidates["mem_axi_araddr"] = ident
+                            elif name.endswith("trace_data"):
+                                candidates["trace_data"] = ident
+                    elif stripped.startswith("$enddefinitions"):
                         in_header = False
                     continue
+            # only need header
 
-                if signal_id is None:
-                    break
+        priority = [
+            ("rvfi_pc_wdata", "pc"),
+            ("reg_pc", "pc"),
+            ("mem_axi_araddr", "pc"),
+            ("trace_data", "trace"),
+        ]
+        for name, kind in priority:
+            signal_id = candidates.get(name)
+            if not signal_id:
+                continue
+            pcs = read_pcs(signal_id, kind)
+            if len(pcs) > 1:
+                return pcs, name
 
-                value = parse_value(line)
-                if value is None:
+        # Fall back to whatever we have.
+        for name, kind in priority:
+            signal_id = candidates.get(name)
+            if not signal_id:
+                continue
+            pcs = read_pcs(signal_id, kind)
+            if pcs:
+                return pcs, name
+
+        return [], source
+
+    def _extract_pc_trace_from_tracefile(self, trace_path: Path) -> List[int]:
+        """Extract PC samples from testbench.trace."""
+        pcs: List[int] = []
+        with trace_path.open("r", errors="replace") as trace_file:
+            for line in trace_file:
+                value = line.strip()
+                if not value:
                     continue
-                pcs.append(value)
-                if max_entries is not None and len(pcs) > max_entries:
-                    pcs = pcs[-max_entries:]
-
+                try:
+                    raw = int(value, 16)
+                except ValueError:
+                    continue
+                pcs.append(raw & 0xFFFFFFFF)
         return pcs
 
     def _format_program_asm(self, program: UltimateProgram) -> str:
