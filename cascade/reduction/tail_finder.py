@@ -104,19 +104,33 @@ class TailFinder:
 
         # Find final block (the one with infinite loop)
         final_block = blocks[-1]
+        
+        # Binary search for the first block index that triggers the bug
+        low = 0
+        high = n - 2 # We don't check the final block itself, it's the target
+        
+        candidates_checked = 0
+        min_triggering_idx = None
 
-        # Parallel scan across candidate blocks.
-        candidates = []
-        for idx in range(0, n - 1):
-            modified = self._create_early_exit_program(program, idx, final_block)
-            candidates.append((idx, modified))
+        while low <= high:
+            mid = (low + high) // 2
+            
+            modified = self._create_early_exit_program(program, mid, final_block)
+            result = self.rtl_runner.run(modified)
+            candidates_checked += 1
+            
+            if result.bug_detected:
+                # Bug triggered, try to find an earlier one
+                min_triggering_idx = mid
+                high = mid - 1
+            else:
+                # Bug not triggered, need more blocks
+                low = mid + 1
 
-        results = self._run_candidates(candidates)
-        triggering = [idx for idx, bug in results.items() if bug]
-        if not triggering:
-            return None, len(candidates)
+        if min_triggering_idx is None:
+            return None, candidates_checked
 
-        return blocks[min(triggering)], len(candidates)
+        return blocks[min_triggering_idx], candidates_checked
 
     def _find_tail_instruction(self, program: UltimateProgram,
                               block: BasicBlock) -> Tuple[Optional[int], int]:
@@ -130,17 +144,29 @@ class TailFinder:
         if n <= 1:
             return 0 if n == 1 else None, 0
 
-        candidates = []
-        for idx in range(0, n):
-            modified = self._create_instruction_exit_program(program, block, idx)
-            candidates.append((idx, modified))
+        low = 0
+        high = n - 1
+        
+        candidates_checked = 0
+        min_triggering_idx = None
+        
+        while low <= high:
+            mid = (low + high) // 2
+            
+            modified = self._create_instruction_exit_program(program, block, mid)
+            result = self.rtl_runner.run(modified)
+            candidates_checked += 1
+            
+            if result.bug_detected:
+                min_triggering_idx = mid
+                high = mid - 1
+            else:
+                low = mid + 1
 
-        results = self._run_candidates(candidates)
-        triggering = [idx for idx, bug in results.items() if bug]
-        if not triggering:
-            return None, len(candidates)
+        if min_triggering_idx is None:
+            return None, candidates_checked
 
-        return min(triggering), len(candidates)
+        return min_triggering_idx, candidates_checked
 
     def _create_early_exit_program(self, program: UltimateProgram,
                                    exit_block_idx: int,

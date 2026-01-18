@@ -155,7 +155,7 @@ class FuzzerConfig:
 
     # Execution parameters
     iss_timeout: int = 10000  # ISS instruction limit
-    rtl_timeout: int = 100000  # RTL cycle limit
+    rtl_timeout: int = 10000  # RTL cycle limit
 
     # Tool paths
     spike_path: Path = field(default_factory=lambda: Path("/opt/riscv/bin/spike"))
