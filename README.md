@@ -221,7 +221,7 @@ cascade/
 # Activate virtual environment first
 source .venv/bin/activate
 
-# Run all tests
+# Run all tests (includes RTL integration; requires a built RTL simulator)
 pytest tests/
 
 # Run with coverage
@@ -229,6 +229,24 @@ pytest tests/ --cov=cascade
 
 # Run specific test file
 pytest tests/test_encoding.py
+```
+
+The RTL integration tests require a built RTL simulator (e.g. `deps/picorv32`).
+Set `CASCADE_RTL_PATH` to the RTL model root so the tests can locate the binary.
+If you want to skip them, you can filter by keyword:
+
+```bash
+pytest tests/ -k "not rtl_integration"
+```
+
+## CI Notes
+
+To run the full test suite in CI, build the RTL simulator and export its path:
+
+```bash
+make -C deps/picorv32 sim
+export CASCADE_RTL_PATH=deps/picorv32
+pytest tests/
 ```
 
 ## How It Works

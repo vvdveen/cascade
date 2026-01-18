@@ -136,7 +136,9 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 
-# 3. Run tests (should all pass without Spike/Verilator)
+# 3. Run tests (RTL integration tests require a built simulator)
+make -C deps/picorv32 sim
+export CASCADE_RTL_PATH=deps/picorv32
 pytest tests/
 
 # 4. Test the fuzzer with mock runners
@@ -171,7 +173,7 @@ If your Homebrew package only provides `riscv64-unknown-elf-objdump`, use that i
 
 1. Modified `scripts/setup_deps.sh` that works on macOS (Homebrew)
 2. Updated `README.md` with macOS instructions
-3. All 62 tests passing on macOS
+3. All tests passing on macOS (RTL integration tests require a built simulator)
 4. Fuzzer running (at minimum with mock runners)
 
 ---
