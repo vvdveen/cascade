@@ -117,6 +117,8 @@ class BasicBlockGenerator:
         self.config = config
         self.memory = memory
         self.reg_fsm = reg_fsm
+        self.data_base_reg = 18  # Reserved register for data base
+        self.reserved_regs = {self.data_base_reg}
 
         # Build instruction pools by category
         self.instruction_pools = self._build_instruction_pools()
@@ -319,22 +321,13 @@ class BasicBlockGenerator:
         """Generate a load instruction."""
         rd = self._select_dest_register()
 
-        # Get a valid load address
-        addr = self.memory.get_valid_load_address(instr.mem_size, instr.mem_size)
-        if addr is None:
-            # Fall back to data region
-            addr = self.memory.layout.data_start
+        base_reg = self._select_operand_register()
+        base_value = self.reg_fsm.get_info(base_reg).applied_value
+        if base_value is None or not self._addr_in_data(base_value):
+            base_reg = self.data_base_reg
+            base_value = self.reg_fsm.get_info(base_reg).applied_value or self.memory.layout.data_start
 
-        # Split address into base register + offset
-        base_reg = self.reg_fsm.select_operand_register(self.config.recent_register_bias)
-        base_value = self.reg_fsm.get_info(base_reg).applied_value or 0
-
-        # Calculate offset
-        offset = (addr - base_value) & 0xFFFFFFFF
-        if offset > 2047 or offset < -2048:
-            # Offset too large, need to set up base register
-            # For now, use a simpler approach: random small offset
-            offset = random.randint(-2048, 2047)
+        offset = self._pick_data_offset(base_value, instr.mem_size)
 
         enc = EncodedInstruction(instr, rd=rd, rs1=base_reg, imm=offset & 0xFFF)
         self.reg_fsm.mark_written(rd, pc)
@@ -354,20 +347,15 @@ class BasicBlockGenerator:
     def _generate_store_instruction(self, pc: int,
                                     instr: Instruction) -> EncodedInstruction:
         """Generate a store instruction."""
-        rs2 = self.reg_fsm.select_operand_register(self.config.recent_register_bias)
+        rs2 = self._select_operand_register()
 
-        # Get a valid store address
-        addr = self.memory.get_valid_store_address(instr.mem_size, instr.mem_size)
-        if addr is None:
-            addr = self.memory.layout.data_start
+        base_reg = self._select_operand_register()
+        base_value = self.reg_fsm.get_info(base_reg).applied_value
+        if base_value is None or not self._addr_in_data(base_value):
+            base_reg = self.data_base_reg
+            base_value = self.reg_fsm.get_info(base_reg).applied_value or self.memory.layout.data_start
 
-        # Use a base register (ideally one pointing to data region)
-        base_reg = self.reg_fsm.select_operand_register(self.config.recent_register_bias)
-        base_value = self.reg_fsm.get_info(base_reg).applied_value or 0
-
-        offset = (addr - base_value) & 0xFFFFFFFF
-        if offset > 2047 or offset < -2048:
-            offset = random.randint(0, 2047)
+        offset = self._pick_data_offset(base_value, instr.mem_size)
 
         enc = EncodedInstruction(instr, rs1=base_reg, rs2=rs2, imm=offset & 0xFFF)
         return enc
@@ -390,7 +378,7 @@ class BasicBlockGenerator:
                                                            Optional[CFAmbiguousMarker]]:
         """Generate a JALR instruction."""
         rd = self._select_dest_register()
-        rs1 = self.reg_fsm.select_operand_register(self.config.recent_register_bias)
+        rs1 = self._select_operand_register()
 
         # JALR is cf-ambiguous: target depends on rs1 value
         offset = 0
@@ -415,8 +403,8 @@ class BasicBlockGenerator:
         branch_instrs = [BEQ, BNE, BLT, BGE, BLTU, BGEU]
         instr = random.choice(branch_instrs)
 
-        rs1 = self.reg_fsm.select_operand_register(self.config.recent_register_bias)
-        rs2 = self.reg_fsm.select_operand_register(self.config.recent_register_bias)
+        rs1 = self._select_operand_register()
+        rs2 = self._select_operand_register()
 
         # Decide if branch should be taken or not
         is_taken = random.choice([True, False])
@@ -440,7 +428,19 @@ class BasicBlockGenerator:
     def _select_dest_register(self) -> int:
         """Select a destination register."""
         # Avoid x0
-        return random.randint(1, self.config.cpu.num_gpr - 1)
+        while True:
+            reg = random.randint(1, self.config.cpu.num_gpr - 1)
+            if reg not in self.reserved_regs:
+                return reg
+
+    def _select_operand_register(self) -> int:
+        """Select an operand register avoiding reserved registers."""
+        for _ in range(10):
+            reg = self.reg_fsm.select_operand_register(self.config.recent_register_bias)
+            if reg not in self.reserved_regs:
+                return reg
+        # Fall back to any non-reserved register
+        return 1 if 1 not in self.reserved_regs else 2
 
     def generate_initial_block(self, start_addr: int) -> BasicBlock:
         """
@@ -480,6 +480,17 @@ class BasicBlockGenerator:
             self.reg_fsm.transition_addi_complete(reg, lower & 0xFFF, pc)
             pc += 4
 
+        # Initialize data base register
+        data_base = self.memory.layout.data_start
+        upper = (data_base + 0x800) >> 12
+        lower = data_base - (upper << 12)
+        block.instructions.append(EncodedInstruction(LUI, rd=self.data_base_reg, imm=(upper & 0xFFFFF) << 12))
+        self.reg_fsm.transition_lui(self.data_base_reg, upper & 0xFFFFF, pc)
+        pc += 4
+        block.instructions.append(EncodedInstruction(ADDI, rd=self.data_base_reg, rs1=self.data_base_reg, imm=lower & 0xFFF))
+        self.reg_fsm.transition_addi_complete(self.data_base_reg, lower & 0xFFF, pc)
+        pc += 4
+
         # Jump to next block (placeholder)
         block.terminator = EncodedInstruction(JAL, rd=0, imm=4)
 
@@ -497,3 +508,23 @@ class BasicBlockGenerator:
         block.terminator = EncodedInstruction(EBREAK)
 
         return block
+
+    def _addr_in_data(self, addr: int) -> bool:
+        """Check if address falls within data region."""
+        start = self.memory.layout.data_start
+        end = self.memory.layout.data_start + self.memory.layout.data_size
+        return start <= addr < end
+
+    def _pick_data_offset(self, base_value: int, size: int) -> int:
+        """Pick a small offset so base+offset stays in data region."""
+        start = self.memory.layout.data_start
+        end = self.memory.layout.data_start + self.memory.layout.data_size
+        min_offset = start - base_value
+        max_offset = (end - size) - base_value
+        if min_offset > max_offset:
+            return 0
+        min_offset = max(min_offset, -2048)
+        max_offset = min(max_offset, 2047)
+        if min_offset > max_offset:
+            return 0
+        return random.randint(int(min_offset), int(max_offset))
