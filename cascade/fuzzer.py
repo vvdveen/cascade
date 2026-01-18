@@ -12,6 +12,7 @@ import time
 import multiprocessing
 import queue
 import os
+import fcntl
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Tuple
 from dataclasses import dataclass, field
@@ -36,6 +37,9 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger('cascade')
+
+class SeedCollisionError(RuntimeError):
+    """Raised when a program seed has already been used."""
 
 
 @dataclass
@@ -110,6 +114,7 @@ class Fuzzer:
         # Output directory
         self.output_dir = config.output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self._seed_history_path = self.output_dir / "seed_history.txt"
 
     def _init_runners(self) -> None:
         """Initialize ISS and RTL runners."""
@@ -201,6 +206,9 @@ class Fuzzer:
                 prev_bugs = self.stats.bugs_found
                 self._fuzz_iteration(i)
                 executed += self.stats.programs_executed - prev_executed
+            except SeedCollisionError as e:
+                logger.warning(str(e))
+                raise SystemExit(1)
             except Exception as e:
                 logger.error(f"Error in iteration {i}: {e}")
             completed += 1
@@ -288,6 +296,9 @@ class Fuzzer:
         # 1. Generate intermediate program
         intermediate = self.intermediate_gen.generate(seed=seed)
         self.stats.programs_generated += 1
+        program_seed = intermediate.descriptor.seed if intermediate.descriptor else seed
+        if program_seed is not None:
+            self._record_seed(program_seed)
 
         # 2. Run on ISS, collect feedback
         iss_result = self.iss_runner.run(intermediate, collect_feedback=True)
@@ -711,6 +722,30 @@ class Fuzzer:
         logger.info(f"Duration: {self.stats.duration:.1f}s")
         logger.info(f"Rate: {self.stats.programs_per_second:.1f} programs/second")
 
+    def _record_seed(self, seed: int) -> None:
+        """Record a seed and raise if it has been used before."""
+        self._seed_history_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self._seed_history_path, "a+") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            f.seek(0)
+            existing = set()
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    existing.add(int(line))
+                except ValueError:
+                    continue
+            if seed in existing:
+                raise SeedCollisionError(
+                    f"Seed collision detected: seed {seed} already used in {self._seed_history_path}"
+                )
+            f.write(f"{seed}\n")
+            f.flush()
+            os.fsync(f.fileno())
+            fcntl.flock(f, fcntl.LOCK_UN)
+
     def _merge_worker_stats(self, worker_stats: FuzzerStats, worker_bugs: List[BugReport]) -> None:
         """Merge worker stats and bug reports into this fuzzer's stats."""
         self.stats.programs_generated += worker_stats.programs_generated
@@ -779,6 +814,9 @@ def _worker_fuzz(config: FuzzerConfig, start_index: int, count: int,
             fuzzer._fuzz_iteration(iteration)
             if i < 3:  # Log first few iterations
                 worker_logger.info(f"Iteration {iteration}: generated={fuzzer.stats.programs_generated}, executed={fuzzer.stats.programs_executed}, iss_errors={fuzzer.stats.iss_errors}")
+        except SeedCollisionError as e:
+            worker_logger.warning(str(e))
+            raise
         except Exception as e:
             worker_logger.error(f"Error at iteration {iteration}: {e}", exc_info=True)
         executed_delta = fuzzer.stats.programs_executed - prev_executed
