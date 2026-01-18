@@ -201,14 +201,45 @@ bugs = fuzzer.fuzz()
 
 ## Root Cause Hypothesis
 
-The most likely causes of ISS timeout:
+### Verified: Programs DO Have ebreak
 
-1. **Missing ebreak**: Programs don't terminate properly
-2. **Infinite loop**: Generated code creates infinite loop
-3. **Memory fault**: Spike can't access required memory regions
-4. **Bad entry point**: ELF entry doesn't match code location
+The code flow in `intermediate.py`:
+1. `generate()` creates initial block, N fuzzing blocks, final block
+2. `_generate_final_block()` calls `block_gen.generate_final_block()`
+3. `generate_final_block()` in `basic_block.py:488` sets `block.terminator = EncodedInstruction(EBREAK)`
+4. `_fixup_control_flow()` makes each block JAL to the next block
+5. Final block has ebreak, not JAL, so it doesn't get modified
 
-The `_is_expected_termination()` function looks for "ebreak" or "breakpoint" in Spike output. If the program never executes ebreak, it will run until timeout.
+**Control flow is correct - programs SHOULD reach ebreak.**
+
+### Remaining Hypotheses
+
+Since programs have ebreak and control flow looks correct, the issue is likely:
+
+1. **ELF Structure Problem**: Entry point or load address mismatch
+   - Entry point should be `code_start` (0x80000000)
+   - Load address should match
+   - Verify with `readelf -h program.elf`
+
+2. **Memory Configuration for Spike**:
+   - Command: `-m0x80000000:0x100000`
+   - This sets memory at 0x80000000 with size 1MB
+   - Might need different format or additional flags
+
+3. **Spike Output Detection**:
+   - Code looks for "ebreak" or "breakpoint" in output
+   - Spike's commit log might use different wording
+   - Need to capture actual Spike output to verify
+
+4. **Initial Block Problem**:
+   - `generate_initial_block()` might have issues
+   - Might jump somewhere unexpected before reaching ebreak
+
+5. **Instruction Encoding Bug**:
+   - EBREAK might be encoded incorrectly
+   - JAL offsets might be calculated wrong
+
+The `_is_expected_termination()` function looks for "ebreak" or "breakpoint" in Spike output. If the output uses different wording, it won't detect termination.
 
 ## Files to Read
 
