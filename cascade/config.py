@@ -154,8 +154,8 @@ class FuzzerConfig:
     recent_register_bias: float = 0.7
 
     # Execution parameters
-    iss_timeout: int = 10000  # ISS instruction limit
-    rtl_timeout: int = 10000  # RTL cycle limit
+    iss_timeout: int = 20000  # ISS timeout in ms
+    rtl_timeout: int = 20000  # RTL timeout in ms
 
     # Tool paths
     spike_path: Path = field(default_factory=lambda: Path("/opt/riscv/bin/spike"))

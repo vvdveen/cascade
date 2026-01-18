@@ -604,8 +604,8 @@ class Fuzzer:
                         per_worker_done: dict, per_worker_total: dict) -> None:
         """Print progress bars for overall and per-worker runs."""
         overall = _format_bar(executed, total)
-        line = f"\rOverall {overall} done {completed}/{total} bugs {bugs_found}"
-        print(line, end="", flush=True)
+        line = f"Overall {overall} done {completed}/{total} bugs {bugs_found}"
+        print(line, flush=True)
 
 
 def _format_bar(done: int, total: int, width: int = 20) -> str:
@@ -628,21 +628,32 @@ def _split_work(total: int, workers: int) -> List[int]:
 def _worker_fuzz(config: FuzzerConfig, start_index: int, count: int,
                  worker_id: int, progress_queue: multiprocessing.Queue) -> Tuple[FuzzerStats, List[BugReport]]:
     """Worker process entrypoint for parallel fuzzing."""
-    fuzzer = Fuzzer(config)
+    import sys
+    print(f"[Worker {worker_id}] Starting, count={count}", file=sys.stderr, flush=True)
+    try:
+        fuzzer = Fuzzer(config)
+    except Exception as e:
+        print(f"[Worker {worker_id}] Failed to create Fuzzer: {e}", file=sys.stderr, flush=True)
+        raise
+    print(f"[Worker {worker_id}] Fuzzer created", file=sys.stderr, flush=True)
     fuzzer.stats = FuzzerStats()
     fuzzer.bugs = []
 
     for i in range(count):
         iteration = start_index + i
+        if i == 0:
+            print(f"[Worker {worker_id}] First iteration starting", file=sys.stderr, flush=True)
         try:
             prev_executed = fuzzer.stats.programs_executed
             prev_bugs = fuzzer.stats.bugs_found
             fuzzer._fuzz_iteration(iteration)
         except Exception as e:
-            logger.error(f"Worker {worker_id} error at iteration {iteration}: {e}")
+            print(f"[Worker {worker_id}] Error at iteration {iteration}: {e}", file=sys.stderr, flush=True)
         executed_delta = fuzzer.stats.programs_executed - prev_executed
         bug_delta = fuzzer.stats.bugs_found - prev_bugs
         progress_queue.put((worker_id, executed_delta, bug_delta))
+        if i == 0:
+            print(f"[Worker {worker_id}] First iteration done, sent to queue", file=sys.stderr, flush=True)
 
     return fuzzer.stats, fuzzer.bugs
 
