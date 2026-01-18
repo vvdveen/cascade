@@ -538,12 +538,7 @@ class Fuzzer:
                         per_worker_done: dict, per_worker_total: dict) -> None:
         """Print progress bars for overall and per-worker runs."""
         overall = _format_bar(executed, total)
-        worker_parts = []
-        for worker_id in sorted(per_worker_total.keys()):
-            done = per_worker_done.get(worker_id, 0)
-            total_worker = per_worker_total[worker_id]
-            worker_parts.append(f"W{worker_id} { _format_bar(done, total_worker, width=10) }")
-        line = f"\rOverall {overall} done {completed}/{total} bugs {bugs_found}  " + "  ".join(worker_parts)
+        line = f"\rOverall {overall} done {completed}/{total} bugs {bugs_found}"
         print(line, end="", flush=True)
 
 
