@@ -304,11 +304,19 @@ class Fuzzer:
         # 3. Generate ultimate program
         ultimate = self.ultimate_gen.generate(intermediate, iss_result.feedback)
 
-        # 4. Run on RTL
+        # 4. Verify ultimate program terminates on ISS before RTL
+        ultimate_iss = self.iss_runner.run(ultimate, collect_feedback=False)
+        if not ultimate_iss.success:
+            self.stats.iss_errors += 1
+            if ultimate_iss.timeout:
+                logger.debug(f"Ultimate ISS timeout at iteration {iteration}")
+            return
+
+        # 5. Run on RTL
         rtl_result = self.rtl_runner.run(ultimate)
         self.stats.programs_executed += 1
 
-        # 5. Check for bugs
+        # 6. Check for bugs
         if rtl_result.bug_detected:
             self.stats.bugs_found += 1
             bug, bug_dir = self._report_bug_pre(
