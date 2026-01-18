@@ -2,9 +2,9 @@
 
 ## TL;DR
 
-**The fuzzer doesn't work.** Root cause: intermediate programs use JALR and branch instructions but don't set up the register values they read from. This causes control flow to jump to wrong addresses, creating infinite loops. Spike times out because ebreak is never reached.
+**The fuzzer can run, but ISS timeouts are likely.** Root cause: intermediate programs use JALR and branch instructions but don't set up the register values they read from. This causes control flow to jump to wrong addresses, creating infinite loops. Spike times out because ebreak is never reached.
 
-**Fix:** In `intermediate.py:_fixup_control_flow()`, replace JALR/branch terminators with JAL instructions (which don't depend on register values).
+**Fix options:** In `intermediate.py:_fixup_control_flow()`, either replace JALR/branch terminators with JAL instructions (deterministic), or insert register setup before JALR/branches so the intermediate program is deterministic while preserving CF-ambiguity in the ultimate program.
 
 ---
 
@@ -23,7 +23,7 @@ The ISS is NOT used for differential comparison - it's used to *construct* valid
 
 ## Current Problem
 
-**The fuzzer doesn't work because Spike (ISS) times out on every generated program.**
+**Spike (ISS) can time out on generated programs due to non-deterministic control flow in the intermediate program.**
 
 ### Symptoms
 
@@ -55,7 +55,7 @@ Per the paper, ISS timeout is NOT expected behavior. The intermediate program sh
 2. Complete with `ebreak` instruction
 3. Provide register value feedback for ultimate program construction
 
-Without ISS feedback, the fuzzer cannot:
+Without ISS feedback, the fuzzer cannot reliably:
 - Construct XOR-based offsets for CF-ambiguous instructions
 - Build ultimate programs
 - Run anything on RTL
@@ -94,7 +94,7 @@ cascade/
 - `ISSRunner.run()`: Runs intermediate program on Spike
 - `_run_spike_with_early_exit()`: Streams Spike output, looks for "ebreak" or "breakpoint"
 - `_build_command()`: Builds Spike command line
-- Timeout: 20 seconds (`config.iss_timeout = 20000ms`)
+- Timeout: 10 seconds by default (`config.iss_timeout = 10000ms`)
 
 Spike command format:
 ```bash
@@ -111,9 +111,8 @@ Spike command format:
 - `to_bytes()`: Serializes program to raw bytes
 
 ### `cascade/fuzzer.py`
-- `Fuzzer.fuzz_one()`: Main iteration - generate → ISS → ultimate → RTL
+- `_fuzz_iteration()`: Main iteration - generate → ISS → ultimate → RTL
 - `_worker_fuzz()`: Worker process function
-- Line 297: `logger.warning(f"ISS failed at iteration {iteration}: {iss_result.error_message}")`
 
 ## Investigation Status
 
@@ -121,7 +120,7 @@ Spike command format:
 1. Spike is installed at `/opt/riscv/bin/spike` and works (`spike --help` succeeds)
 2. RTL model is found at `deps/picorv32/testbench_verilator` (works)
 3. Generated programs are valid ELF files
-4. Every ISS execution times out (20 second timeout)
+4. ISS executions can time out (default 10 second timeout)
 5. RISC-V toolchain (assembler/linker) is NOT installed - only Spike binaries
 
 ### What We Don't Know
@@ -165,17 +164,8 @@ Use `readelf` on a generated ELF to verify entry point and load address are corr
 
 ## Recent Code Changes
 
-### Progress Bar (fixed)
-Changed from `\r` carriage return to newline for file-friendly output.
-
-### RTL Model Detection (fixed)
-Fixed logic to check for pre-built Verilator binary before checking if Verilator is installed.
-
-### Worker Logging (added)
-Each worker now writes to `output/worker_N.log` for debugging.
-
-### Progress Updates (improved)
-Only print progress when `completed > last_completed`.
+- Progress output now uses a single overall bar (no per-worker bars).
+- RTL detection accounts for PicoRV32's `testbench_verilator` binary.
 
 ## Configuration
 
@@ -183,8 +173,8 @@ Key config values from `cascade/config.py`:
 - `cpu.xlen`: 32 (PicoRV32 is rv32)
 - `cpu.extensions`: ['I', 'M'] (integer + multiply)
 - `memory.code_start`: 0x80000000
-- `iss_timeout`: 20000 (20 seconds)
-- `rtl_timeout`: 20000 (20 seconds)
+- `iss_timeout`: 10000 (10 seconds)
+- `rtl_timeout`: 100000 (100 seconds)
 - `spike_path`: /opt/riscv/bin/spike
 - `rtl_model_path`: deps/picorv32
 
@@ -218,9 +208,9 @@ The code flow in `intermediate.py`:
 4. `_fixup_control_flow()` makes each block JAL to the next block
 5. Final block has ebreak, not JAL, so it doesn't get modified
 
-**Control flow is correct - programs SHOULD reach ebreak.**
+**Control flow is not reliably correct - programs MAY fail to reach ebreak.**
 
-### Root Cause Found: JALR Targets Not Set Up
+### Root Cause Found: JALR/Branch Targets Not Set Up
 
 **Debug output confirms the issue:**
 
@@ -257,7 +247,7 @@ elif term.instruction.name == 'jalr':
                 marker.branch_target = next_block.start_addr
 ```
 
-**Problem:** This sets `marker.target_value` but **doesn't actually set up the register** to contain that value! The JALR instruction reads from a register (rs1), and that register contains garbage or a value from previous computation - NOT the next block address.
+**Problem:** This sets `marker.target_value` but **doesn't actually set up the register** to contain that value. JALR and branches read registers that contain arbitrary values, so control flow can jump to wrong addresses.
 
 **Why this is wrong:**
 - JALR: `rd = pc + 4; pc = (rs1 + imm) & ~1`
