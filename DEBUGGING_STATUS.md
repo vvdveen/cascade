@@ -1,5 +1,13 @@
 # Cascade Debugging Status
 
+## TL;DR
+
+**The fuzzer doesn't work.** Root cause: intermediate programs use JALR and branch instructions but don't set up the register values they read from. This causes control flow to jump to wrong addresses, creating infinite loops. Spike times out because ebreak is never reached.
+
+**Fix:** In `intermediate.py:_fixup_control_flow()`, replace JALR/branch terminators with JAL instructions (which don't depend on register values).
+
+---
+
 This document brings another LLM or developer up to speed with the current debugging state of the Cascade CPU fuzzer.
 
 ## What is Cascade?
@@ -212,34 +220,128 @@ The code flow in `intermediate.py`:
 
 **Control flow is correct - programs SHOULD reach ebreak.**
 
-### Remaining Hypotheses
+### Root Cause Found: JALR Targets Not Set Up
 
-Since programs have ebreak and control flow looks correct, the issue is likely:
+**Debug output confirms the issue:**
 
-1. **ELF Structure Problem**: Entry point or load address mismatch
-   - Entry point should be `code_start` (0x80000000)
-   - Load address should match
-   - Verify with `readelf -h program.elf`
+```
+Entry addr: 0x80000000
+Num blocks: 96
+Found EBREAK at 0x80001244
 
-2. **Memory Configuration for Spike**:
-   - Command: `-m0x80000000:0x100000`
-   - This sets memory at 0x80000000 with size 1MB
-   - Might need different format or additional flags
+Running Spike...
+TIMEOUT!
+Partial stderr (66035203 chars): ...  # 66 MB of execution log!
+```
 
-3. **Spike Output Detection**:
-   - Code looks for "ebreak" or "breakpoint" in output
-   - Spike's commit log might use different wording
-   - Need to capture actual Spike output to verify
+The program:
+1. **Does have ebreak** at 0x80001244
+2. **Executes correctly** starting at 0x80000000
+3. **Produces 66 MB of log** before timeout - stuck in loop
+4. **Never reaches ebreak** because JALR jumps to wrong address
 
-4. **Initial Block Problem**:
-   - `generate_initial_block()` might have issues
-   - Might jump somewhere unexpected before reaching ebreak
+**The bug is in `_fixup_control_flow()` for JALR instructions:**
 
-5. **Instruction Encoding Bug**:
-   - EBREAK might be encoded incorrectly
-   - JAL offsets might be calculated wrong
+```python
+elif term.instruction.name == 'jalr':
+    # For intermediate program, make JALR jump to next block
+    # by setting up the register appropriately
+    if i + 1 < len(blocks):
+        next_block = blocks[i + 1]
+        block.jump_target_addr = next_block.start_addr
 
-The `_is_expected_termination()` function looks for "ebreak" or "breakpoint" in Spike output. If the output uses different wording, it won't detect termination.
+        # Update the marker with target value
+        for marker in block.cf_markers:
+            if marker.pc == term_pc:
+                marker.target_value = next_block.start_addr
+                marker.branch_target = next_block.start_addr
+```
+
+**Problem:** This sets `marker.target_value` but **doesn't actually set up the register** to contain that value! The JALR instruction reads from a register (rs1), and that register contains garbage or a value from previous computation - NOT the next block address.
+
+**Why this is wrong:**
+- JALR: `rd = pc + 4; pc = (rs1 + imm) & ~1`
+- The target depends on the register value
+- For intermediate programs, rs1 has whatever value the previous instructions left
+- The marker records what we WANT, but the actual execution jumps somewhere else
+
+**Why this matters:**
+- ISS needs deterministic control flow to execute the intermediate program
+- Without correct register setup, JALR jumps to wrong address
+- This creates an infinite loop, never reaching ebreak
+
+### How to Fix
+
+The intermediate program needs to ensure JALR register values are correct. Options:
+
+1. **Replace JALR with JAL** in intermediate programs (no register dependency)
+2. **Insert setup instructions** before JALR to load the correct target into the register
+3. **Avoid JALR entirely** in intermediate programs, only use in ultimate programs
+
+Per the paper, the intermediate program should have **deterministic control flow** where all targets are known. JALR (indirect jump) is CF-ambiguous and should only be used in the ultimate program after ISS feedback provides the register values.
+
+### Scope of the Problem
+
+The `_generate_hopping_instruction()` in `basic_block.py:242` randomly chooses:
+- `'jal'` (33%) - Works correctly, no register dependency
+- `'jalr'` (33%) - **BROKEN** - rs1 register has random value
+- `'branch'` (33%) - **BROKEN** - rs1/rs2 may not satisfy the branch condition
+
+For a program with 96 blocks (like our test), ~32 blocks use JALR, ~32 use branches. Any broken control flow creates an infinite loop.
+
+### Fix Options
+
+**Option 1: Replace all terminators with JAL in intermediate programs** (Simple, safe)
+
+In `intermediate.py:_fixup_control_flow()`, replace JALR with JAL:
+
+```python
+elif term.instruction.name == 'jalr':
+    # For intermediate program, replace JALR with JAL
+    if i + 1 < len(blocks):
+        next_block = blocks[i + 1]
+        offset = next_block.start_addr - term_pc
+        block.terminator = EncodedInstruction(JAL, rd=term.rd, imm=offset)
+        block.jump_target_addr = next_block.start_addr
+```
+
+For branches, replace with unconditional JAL or ensure they fall through:
+
+```python
+elif term.instruction.category.name == 'BRANCH':
+    # For intermediate program, replace branch with JAL to next block
+    if i + 1 < len(blocks):
+        next_block = blocks[i + 1]
+        offset = next_block.start_addr - term_pc
+        block.terminator = EncodedInstruction(JAL, rd=0, imm=offset)
+        block.jump_target_addr = next_block.start_addr
+```
+
+**Option 2: Only use JAL for intermediate block terminators** (Better design)
+
+Modify `basic_block.py:_generate_hopping_instruction()`:
+
+```python
+def _generate_hopping_instruction(self, pc: int) -> Tuple[EncodedInstruction,
+                                                           Optional[CFAmbiguousMarker]]:
+    """Generate a control-flow changing instruction."""
+    # For intermediate programs, only use JAL (deterministic)
+    # JALR and branches are CF-ambiguous and need ISS feedback
+    return self._generate_jal_instruction(pc)
+```
+
+Then in ultimate program construction, replace some JALs with JALR/branches using ISS feedback.
+
+**Option 3: Insert register setup before JALR** (Complex, matches paper)
+
+Before each JALR in intermediate program, insert:
+```assembly
+lui  rs1, target[31:12]
+addi rs1, rs1, target[11:0]
+jalr rd, rs1, 0
+```
+
+This is what the ultimate program does with XOR offsets, but for intermediate we'd use direct values.
 
 ## Debugging Script
 
