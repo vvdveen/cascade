@@ -12,7 +12,7 @@ from typing import List, Dict, Optional, Tuple
 import random
 
 from ..config import FuzzerConfig
-from ..isa.instructions import JAL, ADDI
+from ..isa.instructions import JAL, ADDI, LUI
 from ..isa.encoding import EncodedInstruction, nop
 from .memory_manager import MemoryManager
 from .register_fsm import RegisterFSM
@@ -261,6 +261,12 @@ class IntermediateProgramGenerator:
                         if marker.pc == term_pc:
                             marker.target_value = next_block.start_addr
                             marker.branch_target = next_block.start_addr
+                    # Overwrite tail instructions to set rs1 to target
+                    setup = self._encode_li(term.rs1, next_block.start_addr)
+                    if not self._overwrite_tail_instructions(block, setup):
+                        # Fallback: replace with JAL if we can't set up registers
+                        offset = next_block.start_addr - term_pc
+                        block.terminator = EncodedInstruction(JAL, rd=term.rd, imm=offset)
 
             elif term.instruction.category.name == 'BRANCH':
                 # For intermediate program, decide if branch is taken
@@ -299,7 +305,47 @@ class IntermediateProgramGenerator:
                                 )
                                 marker.branch_target = next_block.start_addr
 
+                            # Overwrite tail instructions to force branch outcome
+                            rs1_val, rs2_val = self._branch_setup_values(term.instruction.name, marker.is_taken)
+                            setup = self._encode_li(term.rs1, rs1_val) + self._encode_li(term.rs2, rs2_val)
+                            if not self._overwrite_tail_instructions(block, setup):
+                                # Fallback: replace with JAL to the chosen target
+                                target_addr = marker.branch_target or next_block.start_addr
+                                offset = target_addr - term_pc
+                                block.terminator = EncodedInstruction(JAL, rd=0, imm=offset)
+                                block.jump_target_addr = target_addr
+
     def reset(self) -> None:
         """Reset generator state."""
         self.memory.reset()
         self.reg_fsm.reset()
+
+    def _encode_li(self, reg: int, value: int) -> List[EncodedInstruction]:
+        """Encode a 32-bit immediate load into register."""
+        upper = (value + 0x800) >> 12
+        lower = value - (upper << 12)
+        return [
+            EncodedInstruction(LUI, rd=reg, imm=(upper & 0xFFFFF) << 12),
+            EncodedInstruction(ADDI, rd=reg, rs1=reg, imm=lower & 0xFFF),
+        ]
+
+    def _overwrite_tail_instructions(self, block: BasicBlock,
+                                     setup: List[EncodedInstruction]) -> bool:
+        """Overwrite the tail of block.instructions with setup instructions."""
+        if len(block.instructions) < len(setup):
+            return False
+        start = len(block.instructions) - len(setup)
+        block.instructions[start:] = setup
+        return True
+
+    def _branch_setup_values(self, instr_name: str, is_taken: bool) -> Tuple[int, int]:
+        """Pick register values that force a branch to be taken or not."""
+        if instr_name == "beq":
+            return (0, 0) if is_taken else (0, 1)
+        if instr_name == "bne":
+            return (0, 1) if is_taken else (0, 0)
+        if instr_name in ("blt", "bltu"):
+            return (0, 1) if is_taken else (1, 0)
+        if instr_name in ("bge", "bgeu"):
+            return (1, 0) if is_taken else (0, 1)
+        return (0, 0)
