@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Tuple
 
 from ..config import FuzzerConfig
 from ..generator.intermediate import IntermediateProgram
+from ..generator.ultimate import UltimateProgram
 from ..generator.ultimate import ISSFeedback
 from .elf_writer import ELFWriter
 
@@ -129,6 +130,51 @@ class ISSRunner:
                 result.error_message = str(e)
 
         return result
+
+    def run_trace(self, program) -> Tuple[bool, List[int], str]:
+        """Run program on ISS and return PC trace."""
+        pcs: List[int] = []
+        raw_output = ""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            elf_path = Path(tmpdir) / "program.elf"
+            self.elf_writer.write(program, elf_path)
+            cmd = self._build_command(elf_path, trace=True)
+
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.config.iss_timeout / 1000.0
+                )
+                raw_output = proc.stdout + proc.stderr
+                pcs = self._parse_trace_pcs(raw_output)
+                if proc.returncode == 0 or self._is_expected_termination(raw_output):
+                    return True, pcs, raw_output
+                return False, pcs, raw_output
+            except subprocess.TimeoutExpired as e:
+                stdout = e.stdout or ""
+                stderr = e.stderr or ""
+                if isinstance(stdout, bytes):
+                    stdout = stdout.decode(errors="replace")
+                if isinstance(stderr, bytes):
+                    stderr = stderr.decode(errors="replace")
+                raw_output = stdout + stderr
+                pcs = self._parse_trace_pcs(raw_output)
+                return False, pcs, raw_output
+            except Exception as e:
+                return False, pcs, str(e)
+
+    def _parse_trace_pcs(self, output: str) -> List[int]:
+        """Parse PC trace from Spike output."""
+        pcs: List[int] = []
+        pc_pattern = re.compile(r'core\s+\d+:\s+0x([0-9a-fA-F]+)\s+\(0x[0-9a-fA-F]+\)')
+        for line in output.split('\n'):
+            pc_match = pc_pattern.search(line)
+            if pc_match:
+                pcs.append(int(pc_match.group(1), 16))
+        return pcs
 
     def _is_expected_termination(self, output: str) -> bool:
         """Check for clean program termination via ebreak instruction.

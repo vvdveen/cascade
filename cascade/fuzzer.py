@@ -361,6 +361,7 @@ class Fuzzer:
         with open(ultimate_asm_path, "w") as asm_file:
             asm_file.write(self._format_program_asm(ultimate))
         self._write_rerun_script(rerun_script_path, intermediate.descriptor.seed if intermediate.descriptor else 0)
+        self._write_iss_trace(bug_dir / "iss_trace_ultimate.txt", ultimate)
 
         # Save metadata
         meta_path = bug_dir / "metadata.txt"
@@ -392,6 +393,7 @@ class Fuzzer:
             self.elf_writer.write(reduction.reduced_program, reduced_path)
             with open(reduced_asm_path, "w") as asm_file:
                 asm_file.write(self._format_program_asm(reduction.reduced_program))
+            self._write_iss_trace(bug_dir / "iss_trace_reduced.txt", reduction.reduced_program)
 
         meta_path = bug_dir / "metadata.txt"
         with open(meta_path, "a") as f:
@@ -584,6 +586,19 @@ class Fuzzer:
                 lines.append(f"0x{pc:08x}: {block.terminator.to_asm()}")
             lines.append("")
         return "\n".join(lines).rstrip() + "\n"
+
+    def _write_iss_trace(self, output_path: Path, program: UltimateProgram) -> None:
+        """Write ISS PC trace for a program if Spike is available."""
+        if isinstance(self.iss_runner, MockISSRunner):
+            return
+        success, pcs, _ = self.iss_runner.run_trace(program)
+        if not pcs:
+            return
+        with open(output_path, "w") as trace_file:
+            trace_file.write("# ISS PC trace\n")
+            trace_file.write(f"# success={success}\n")
+            for pc in pcs:
+                trace_file.write(f"0x{pc:08x}\n")
 
     def _write_rerun_script(self, script_path: Path, seed: int) -> None:
         """Write a helper script to re-run the RTL simulator for a bug."""
