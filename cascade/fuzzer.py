@@ -402,15 +402,15 @@ class Fuzzer:
         vcd_path = trace_dir / "testbench.vcd"
         if not vcd_path.exists():
             return
-        pcs = self._extract_pc_trace(vcd_path, max_entries=64)
+        pcs = self._extract_pc_trace(vcd_path, max_entries=None)
         if not pcs:
             return
         meta_path = bug_dir / "metadata.txt"
         with open(meta_path, "a") as f:
-            f.write("PC trace (last 64):\n")
+            f.write("PC trace (all):\n")
             f.write(", ".join(f"0x{pc:08x}" for pc in pcs) + "\n")
 
-    def _extract_pc_trace(self, vcd_path: Path, max_entries: int = 64) -> List[int]:
+    def _extract_pc_trace(self, vcd_path: Path, max_entries: Optional[int] = 64) -> List[int]:
         """Extract PC samples from VCD (rvfi_pc_wdata) if available."""
         signal_id = None
         in_header = True
@@ -468,7 +468,7 @@ class Fuzzer:
                 if value is None:
                     continue
                 pcs.append(value)
-                if len(pcs) > max_entries:
+                if max_entries is not None and len(pcs) > max_entries:
                     pcs = pcs[-max_entries:]
 
         return pcs
