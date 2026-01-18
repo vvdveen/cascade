@@ -295,6 +295,17 @@ class Fuzzer:
         if not iss_result.success:
             self.stats.iss_errors += 1
             logger.warning(f"ISS failed at iteration {iteration}: {iss_result.error_message}")
+            if iss_result.timeout:
+                try:
+                    self._report_iss_timeout(
+                        iteration,
+                        intermediate,
+                        intermediate,
+                        iss_result,
+                        label="intermediate"
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to save ISS timeout report at iteration {iteration}: {e}")
             return
 
         if iss_result.feedback is None:
@@ -405,10 +416,11 @@ class Fuzzer:
     def _report_iss_timeout(self, iteration: int,
                             intermediate: IntermediateProgram,
                             ultimate: UltimateProgram,
-                            iss_result) -> None:
+                            iss_result,
+                            label: str = "ultimate") -> None:
         """Save ISS timeout artifacts in output/errors."""
         timestamp = datetime.now()
-        report_id = f"iss_timeout_{timestamp.strftime('%Y%m%d_%H%M%S')}_{iteration}"
+        report_id = f"iss_timeout_{label}_{timestamp.strftime('%Y%m%d_%H%M%S')}_{iteration}"
         error_dir = self.output_dir / "errors" / report_id
         error_dir.mkdir(parents=True, exist_ok=True)
 
