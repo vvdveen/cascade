@@ -313,6 +313,7 @@ class Fuzzer:
                 try:
                     trace_dir = bug_dir / "rtl_trace"
                     self.rtl_runner.capture_trace(ultimate, trace_dir)
+                    self._append_trace_summary(bug_dir, trace_dir)
                 except Exception as e:
                     logger.error(f"Failed to capture RTL trace at iteration {iteration}: {e}")
             reduction = None
@@ -395,6 +396,82 @@ class Fuzzer:
                 f.write(f"Reduction ratio: {reduction.reduction_ratio:.1%}\n")
             else:
                 f.write("Reduction: failed or unavailable\n")
+
+    def _append_trace_summary(self, bug_dir: Path, trace_dir: Path) -> None:
+        """Append PC trace summary from VCD to metadata."""
+        vcd_path = trace_dir / "testbench.vcd"
+        if not vcd_path.exists():
+            return
+        pcs = self._extract_pc_trace(vcd_path, max_entries=64)
+        if not pcs:
+            return
+        meta_path = bug_dir / "metadata.txt"
+        with open(meta_path, "a") as f:
+            f.write("PC trace (last 64):\n")
+            f.write(", ".join(f"0x{pc:08x}" for pc in pcs) + "\n")
+
+    def _extract_pc_trace(self, vcd_path: Path, max_entries: int = 64) -> List[int]:
+        """Extract PC samples from VCD (rvfi_pc_wdata) if available."""
+        signal_id = None
+        in_header = True
+
+        def parse_value(line: str) -> Optional[int]:
+            line = line.strip()
+            if not line:
+                return None
+            if line.startswith("b"):
+                parts = line[1:].split()
+                if len(parts) != 2:
+                    return None
+                bits, ident = parts
+                if ident != signal_id:
+                    return None
+                if any(ch in "xXzZ" for ch in bits):
+                    return None
+                return int(bits, 2)
+            if line.startswith("h"):
+                parts = line[1:].split()
+                if len(parts) != 2:
+                    return None
+                value, ident = parts
+                if ident != signal_id:
+                    return None
+                if any(ch in "xXzZ" for ch in value):
+                    return None
+                return int(value, 16)
+            if line[0] in "01" and len(line) > 1:
+                ident = line[1:]
+                if ident != signal_id:
+                    return None
+                return int(line[0], 2)
+            return None
+
+        pcs: List[int] = []
+        with vcd_path.open("r", errors="replace") as vcd_file:
+            for line in vcd_file:
+                if in_header:
+                    if line.startswith("$var"):
+                        parts = line.split()
+                        if len(parts) >= 5:
+                            ident = parts[3]
+                            name = parts[4]
+                            if name.endswith("rvfi_pc_wdata"):
+                                signal_id = ident
+                    elif line.startswith("$enddefinitions"):
+                        in_header = False
+                    continue
+
+                if signal_id is None:
+                    break
+
+                value = parse_value(line)
+                if value is None:
+                    continue
+                pcs.append(value)
+                if len(pcs) > max_entries:
+                    pcs = pcs[-max_entries:]
+
+        return pcs
 
     def _format_program_asm(self, program: UltimateProgram) -> str:
         """Format ultimate program as simple assembly listing."""
