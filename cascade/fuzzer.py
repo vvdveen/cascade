@@ -309,6 +309,12 @@ class Fuzzer:
             bug, bug_dir = self._report_bug_pre(
                 iteration, intermediate, ultimate, rtl_result
             )
+            if rtl_result.timeout:
+                try:
+                    trace_dir = bug_dir / "rtl_trace"
+                    self.rtl_runner.capture_trace(ultimate, trace_dir)
+                except Exception as e:
+                    logger.error(f"Failed to capture RTL trace at iteration {iteration}: {e}")
             reduction = None
             try:
                 reduction = self.reducer.reduce(ultimate, iss_result.feedback)
@@ -358,6 +364,7 @@ class Fuzzer:
             f.write(f"Seed: {intermediate.descriptor.seed if intermediate.descriptor else 'unknown'}\n")
             f.write(f"Blocks: {len(ultimate.blocks)}\n")
             f.write(f"Cycle count: {rtl_result.cycle_count}\n")
+            f.write(f"RTL timeout: {rtl_result.timeout}\n")
             f.write("Reduction: pending\n")
             f.write(f"RTL output:\n{rtl_result.raw_output}\n")
 

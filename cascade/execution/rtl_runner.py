@@ -96,7 +96,7 @@ class RTLRunner:
         return result
 
     def _run_simulation(self, hex_path: Path, elf_path: Path,
-                        work_dir: Path) -> RTLResult:
+                        work_dir: Path, extra_args: Optional[List[str]] = None) -> RTLResult:
         """
         Run the RTL simulation.
 
@@ -111,7 +111,7 @@ class RTLRunner:
             return result
 
         # Build simulation command
-        cmd = self._build_command(sim_binary, hex_path, elf_path)
+        cmd = self._build_command(sim_binary, hex_path, elf_path, extra_args)
 
         try:
             # Run simulation with timeout
@@ -169,15 +169,26 @@ class RTLRunner:
         return None
 
     def _build_command(self, sim_binary: Path, hex_path: Path,
-                       elf_path: Path) -> List[str]:
+                       elf_path: Path, extra_args: Optional[List[str]] = None) -> List[str]:
         """Build simulation command."""
         cmd = [str(sim_binary)]
 
         # Common arguments for various testbenches
         cmd.extend(["+firmware=" + str(hex_path)])
         cmd.extend(["+max_cycles=" + str(self.config.rtl_timeout)])
+        if extra_args:
+            cmd.extend(extra_args)
 
         return cmd
+
+    def capture_trace(self, program: UltimateProgram, output_dir: Path) -> RTLResult:
+        """Run RTL simulation with trace/vcd enabled and store artifacts."""
+        output_dir.mkdir(parents=True, exist_ok=True)
+        hex_path = output_dir / "program.hex"
+        elf_path = output_dir / "program.elf"
+        write_hex(program, hex_path, base_address=0)
+        self.elf_writer.write(program, elf_path)
+        return self._run_simulation(hex_path, elf_path, output_dir, extra_args=["+trace", "+vcd"])
 
     def _parse_output(self, result: RTLResult) -> None:
         """Parse simulation output for cycle count and status."""
