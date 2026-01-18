@@ -423,6 +423,11 @@ class Fuzzer:
         with open(meta_path, "a") as f:
             f.write(f"PC trace (all, source={source}):\n")
             f.write(", ".join(f"0x{pc:08x}" for pc in pcs) + "\n")
+            unique_pcs = len(set(pcs))
+            f.write(f"PC samples: {len(pcs)}, unique: {unique_pcs}\n")
+            if unique_pcs == 1:
+                resetn_high = self._vcd_signal_seen_high(vcd_path, "resetn")
+                f.write(f"PC appears stuck at 0x{pcs[0]:08x}; resetn_high={resetn_high}\n")
 
     def _extract_pc_trace(self, vcd_path: Path,
                           max_entries: Optional[int] = 64) -> Tuple[List[int], str]:
@@ -528,6 +533,28 @@ class Fuzzer:
                 return pcs, name
 
         return [], source
+
+    def _vcd_signal_seen_high(self, vcd_path: Path, signal_name: str) -> bool:
+        """Check if a single-bit signal ever goes high in VCD."""
+        signal_id = None
+        in_header = True
+        with vcd_path.open("r", errors="replace") as vcd_file:
+            for line in vcd_file:
+                if in_header:
+                    stripped = line.lstrip()
+                    if stripped.startswith("$var"):
+                        parts = stripped.split()
+                        if len(parts) >= 5 and parts[4].endswith(signal_name):
+                            signal_id = parts[3]
+                    elif stripped.startswith("$enddefinitions"):
+                        in_header = False
+                    continue
+                if signal_id is None:
+                    break
+                line = line.strip()
+                if line.startswith("1") and line[1:] == signal_id:
+                    return True
+        return False
 
     def _extract_pc_trace_from_tracefile(self, trace_path: Path) -> List[int]:
         """Extract PC samples from testbench.trace."""
