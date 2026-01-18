@@ -131,11 +131,16 @@ class ISSRunner:
         return result
 
     def _is_expected_termination(self, output: str) -> bool:
-        """Treat trap/ebreak termination as success."""
+        """Check for clean program termination via ebreak instruction.
+
+        Only ebreak/breakpoint indicate intentional program termination.
+        Exception traps (trap_instruction_access_fault, etc.) are errors,
+        not successful termination.
+        """
         if not output:
             return False
         lowered = output.lower()
-        return "ebreak" in lowered or "breakpoint" in lowered or "trap" in lowered
+        return "ebreak" in lowered or "breakpoint" in lowered
 
     def _run_spike_with_early_exit(self, cmd: List[str], result: ISSResult) -> None:
         """Run Spike and stop once termination is observed in the log."""
