@@ -281,29 +281,41 @@ class IntermediateProgramGenerator:
                             if marker.is_taken:
                                 # Pick a random future block as target
                                 future_blocks = blocks[i + 2:] if i + 2 < len(blocks) else []
-                                if future_blocks:
-                                    target = random.choice(future_blocks)
+                                candidates = [
+                                    b for b in future_blocks
+                                    if self._branch_offset_ok(b.start_addr - term_pc)
+                                ]
+                                if candidates:
+                                    target = random.choice(candidates)
                                 else:
                                     target = next_block
                                 offset = target.start_addr - term_pc
-                                block.terminator = EncodedInstruction(
-                                    term.instruction,
-                                    rs1=term.rs1,
-                                    rs2=term.rs2,
-                                    imm=offset
-                                )
-                                marker.branch_target = target.start_addr
-                                block.jump_target_addr = target.start_addr
+                                if not self._branch_offset_ok(offset):
+                                    block.terminator = EncodedInstruction(JAL, rd=0, imm=offset)
+                                    block.jump_target_addr = target.start_addr
+                                else:
+                                    block.terminator = EncodedInstruction(
+                                        term.instruction,
+                                        rs1=term.rs1,
+                                        rs2=term.rs2,
+                                        imm=offset
+                                    )
+                                    marker.branch_target = target.start_addr
+                                    block.jump_target_addr = target.start_addr
                             else:
                                 # Branch not taken, just fall through
                                 offset = next_block.start_addr - term_pc
-                                block.terminator = EncodedInstruction(
-                                    term.instruction,
-                                    rs1=term.rs1,
-                                    rs2=term.rs2,
-                                    imm=offset
-                                )
-                                marker.branch_target = next_block.start_addr
+                                if not self._branch_offset_ok(offset):
+                                    block.terminator = EncodedInstruction(JAL, rd=0, imm=offset)
+                                    block.jump_target_addr = next_block.start_addr
+                                else:
+                                    block.terminator = EncodedInstruction(
+                                        term.instruction,
+                                        rs1=term.rs1,
+                                        rs2=term.rs2,
+                                        imm=offset
+                                    )
+                                    marker.branch_target = next_block.start_addr
 
                             # Overwrite tail instructions to force branch outcome
                             rs1_val, rs2_val = self._branch_setup_values(term.instruction.name, marker.is_taken)
@@ -328,6 +340,12 @@ class IntermediateProgramGenerator:
             EncodedInstruction(LUI, rd=reg, imm=(upper & 0xFFFFF) << 12),
             EncodedInstruction(ADDI, rd=reg, rs1=reg, imm=lower & 0xFFF),
         ]
+
+    def _branch_offset_ok(self, offset: int) -> bool:
+        """Check if branch offset fits 13-bit signed immediate (and is aligned)."""
+        if offset % 2 != 0:
+            return False
+        return -4094 <= offset <= 4094
 
     def _overwrite_tail_instructions(self, block: BasicBlock,
                                      setup: List[EncodedInstruction]) -> bool:

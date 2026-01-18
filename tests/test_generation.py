@@ -3,7 +3,7 @@ Tests for program generation.
 """
 
 import pytest
-from cascade.config import FuzzerConfig, CPUConfig, Extension
+from cascade.config import FuzzerConfig, CPUConfig, Extension, InstructionWeights
 from cascade.generator.intermediate import IntermediateProgram, IntermediateProgramGenerator
 from cascade.generator.basic_block import BasicBlock, BasicBlockGenerator
 from cascade.generator.memory_manager import MemoryManager
@@ -128,6 +128,40 @@ class TestIntermediateProgramGeneration:
         assert program.descriptor is not None
         assert program.descriptor.seed == 42
         assert program.descriptor.num_blocks == len(program.blocks)
+
+    def test_branch_offsets_within_range(self):
+        """Test that generated branch offsets fit B-type immediate range."""
+        config = FuzzerConfig(
+            cpu=CPUConfig(name="test", xlen=32, extensions={Extension.I}),
+            min_basic_blocks=80,
+            max_basic_blocks=80,
+            min_block_instructions=20,
+            max_block_instructions=20,
+            weights=InstructionWeights(
+                alu=0.0,
+                mem=0.0,
+                branch=1.0,
+                jal=0.0,
+                jalr=0.0,
+                regfsm=0.0,
+                csr=0.0,
+                fence=0.0,
+                muldiv=0.0,
+            ),
+        )
+        generator = IntermediateProgramGenerator(config)
+        program = generator.generate(seed=7)
+
+        branches = 0
+        for block in program.blocks:
+            instrs = list(block.instructions)
+            if block.terminator:
+                instrs.append(block.terminator)
+            for instr in instrs:
+                if instr.instruction.category.name == "BRANCH":
+                    branches += 1
+                    assert -4094 <= instr.imm <= 4094
+        assert branches > 0
 
     def test_mem_offsets_are_aligned(self, config):
         """Test that generated memory offsets respect access alignment."""
