@@ -310,6 +310,15 @@ class Fuzzer:
             self.stats.iss_errors += 1
             if ultimate_iss.timeout:
                 logger.debug(f"Ultimate ISS timeout at iteration {iteration}")
+                try:
+                    self._report_iss_timeout(
+                        iteration,
+                        intermediate,
+                        ultimate,
+                        ultimate_iss
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to save ISS timeout report at iteration {iteration}: {e}")
             return
 
         # 5. Run on RTL
@@ -392,6 +401,36 @@ class Fuzzer:
             description=rtl_result.error_message
         )
         return bug, bug_dir
+
+    def _report_iss_timeout(self, iteration: int,
+                            intermediate: IntermediateProgram,
+                            ultimate: UltimateProgram,
+                            iss_result) -> None:
+        """Save ISS timeout artifacts in output/errors."""
+        timestamp = datetime.now()
+        report_id = f"iss_timeout_{timestamp.strftime('%Y%m%d_%H%M%S')}_{iteration}"
+        error_dir = self.output_dir / "errors" / report_id
+        error_dir.mkdir(parents=True, exist_ok=True)
+
+        ultimate_path = error_dir / "ultimate.elf"
+        intermediate_path = error_dir / "intermediate.elf"
+        ultimate_asm_path = error_dir / "ultimate.S"
+        iss_script_path = error_dir / "rerun_iss.sh"
+        meta_path = error_dir / "metadata.txt"
+
+        self.elf_writer.write(ultimate, ultimate_path)
+        self.elf_writer.write(intermediate, intermediate_path)
+        with open(ultimate_asm_path, "w") as asm_file:
+            asm_file.write(self._format_program_asm(ultimate))
+        self._write_rerun_iss_script(iss_script_path, ultimate_path)
+
+        with open(meta_path, "w") as f:
+            f.write(f"Report ID: {report_id}\n")
+            f.write(f"Timestamp: {timestamp}\n")
+            f.write(f"Seed: {intermediate.descriptor.seed if intermediate.descriptor else 'unknown'}\n")
+            f.write(f"Blocks: {len(ultimate.blocks)}\n")
+            f.write("ISS timeout: True\n")
+            f.write(f"ISS output:\n{iss_result.raw_output}\n")
 
     def _report_bug_post(self, bug_dir: Path, reduction) -> None:
         """Save reduced artifacts and append reduction metadata."""
@@ -621,6 +660,20 @@ class Fuzzer:
             f'--seed {seed} '
             f'--spike-path "{spike_path}" '
             f'--rtl-path "{rtl_path}"\n'
+        )
+        script_path.write_text(script)
+        script_path.chmod(0o755)
+
+    def _write_rerun_iss_script(self, script_path: Path, ultimate_path: Path) -> None:
+        """Write a helper script to re-run ISS on an ultimate program."""
+        spike_path = self.config.spike_path
+        script = (
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "\n"
+            f'export PATH="{spike_path.parent}:$PATH"\n'
+            f'"{spike_path}" --isa {self.iss_runner.isa_string} '
+            f'-m0x80000000:0x100000 -l --log-commits "{ultimate_path}"\n'
         )
         script_path.write_text(script)
         script_path.chmod(0o755)
