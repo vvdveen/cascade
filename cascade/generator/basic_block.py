@@ -378,7 +378,7 @@ class BasicBlockGenerator:
                                                            Optional[CFAmbiguousMarker]]:
         """Generate a JALR instruction."""
         rd = self._select_dest_register()
-        rs1 = self._select_operand_register()
+        rs1 = self._select_operand_register(allow_zero=False)
 
         # JALR is cf-ambiguous: target depends on rs1 value
         offset = 0
@@ -403,8 +403,8 @@ class BasicBlockGenerator:
         branch_instrs = [BEQ, BNE, BLT, BGE, BLTU, BGEU]
         instr = random.choice(branch_instrs)
 
-        rs1 = self._select_operand_register()
-        rs2 = self._select_operand_register()
+        rs1 = self._select_operand_register(allow_zero=False)
+        rs2 = self._select_operand_register(allow_zero=False)
 
         # Decide if branch should be taken or not
         is_taken = random.choice([True, False])
@@ -433,14 +433,19 @@ class BasicBlockGenerator:
             if reg not in self.reserved_regs:
                 return reg
 
-    def _select_operand_register(self) -> int:
+    def _select_operand_register(self, allow_zero: bool = True) -> int:
         """Select an operand register avoiding reserved registers."""
         for _ in range(10):
             reg = self.reg_fsm.select_operand_register(self.config.recent_register_bias)
+            if reg in self.reserved_regs:
+                continue
+            if not allow_zero and reg == 0:
+                continue
+            return reg
+        for reg in range(1, self.config.cpu.num_gpr):
             if reg not in self.reserved_regs:
                 return reg
-        # Fall back to any non-reserved register
-        return 1 if 1 not in self.reserved_regs else 2
+        return 1
 
     def generate_initial_block(self, start_addr: int) -> BasicBlock:
         """
@@ -527,4 +532,11 @@ class BasicBlockGenerator:
         max_offset = min(max_offset, 2047)
         if min_offset > max_offset:
             return 0
-        return random.randint(int(min_offset), int(max_offset))
+        alignment = max(1, int(size))
+        base_mod = (base_value + min_offset) % alignment
+        if base_mod != 0:
+            min_offset += alignment - base_mod
+        max_offset -= (base_value + max_offset) % alignment
+        if min_offset > max_offset:
+            return 0
+        return random.randrange(int(min_offset), int(max_offset) + 1, alignment)

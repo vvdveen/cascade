@@ -206,7 +206,7 @@ class IntermediateProgramGenerator:
         block = self.block_gen.generate_block(
             alloc.start,
             block_id,
-            min_instrs=1,
+            min_instrs=num_instrs,
             max_instrs=num_instrs
         )
 

@@ -5,7 +5,9 @@ Tests for program generation.
 import pytest
 from cascade.config import FuzzerConfig, CPUConfig, Extension
 from cascade.generator.intermediate import IntermediateProgram, IntermediateProgramGenerator
-from cascade.generator.basic_block import BasicBlock
+from cascade.generator.basic_block import BasicBlock, BasicBlockGenerator
+from cascade.generator.memory_manager import MemoryManager
+from cascade.generator.register_fsm import RegisterFSM
 
 
 class TestIntermediateProgramGeneration:
@@ -71,6 +73,15 @@ class TestIntermediateProgramGeneration:
             # Next block should start at or after current block ends
             assert next_.start_addr >= curr.end_addr
 
+    def test_fuzzing_blocks_have_no_gaps(self, generator):
+        """Test that fuzzing blocks are packed without gaps."""
+        program = generator.generate(seed=42)
+
+        for i in range(1, len(program.blocks) - 1):
+            curr = program.blocks[i]
+            next_ = program.blocks[i + 1]
+            assert next_.start_addr == curr.end_addr
+
     def test_program_to_bytes(self, generator):
         """Test program serialization to bytes."""
         program = generator.generate(seed=42)
@@ -117,6 +128,47 @@ class TestIntermediateProgramGeneration:
         assert program.descriptor is not None
         assert program.descriptor.seed == 42
         assert program.descriptor.num_blocks == len(program.blocks)
+
+    def test_mem_offsets_are_aligned(self, config):
+        """Test that generated memory offsets respect access alignment."""
+        memory = MemoryManager(config.memory, config.cpu.xlen)
+        reg_fsm = RegisterFSM(config.cpu.num_gpr)
+        block_gen = BasicBlockGenerator(config, memory, reg_fsm)
+
+        base_values = [
+            config.memory.data_start,
+            config.memory.data_start + 1,
+            config.memory.data_start + 2,
+            config.memory.data_start + 3,
+        ]
+        sizes = [1, 2, 4]
+        data_end = config.memory.data_start + config.memory.data_size
+
+        for base_value in base_values:
+            for size in sizes:
+                for _ in range(25):
+                    offset = block_gen._pick_data_offset(base_value, size)
+                    addr = base_value + offset
+                    assert config.memory.data_start <= addr <= data_end - size
+                    if size > 1:
+                        assert addr % size == 0
+
+    def test_jalr_and_branch_use_nonzero_regs(self, config):
+        """Test that JALR/branch operands are never x0."""
+        memory = MemoryManager(config.memory, config.cpu.xlen)
+        reg_fsm = RegisterFSM(config.cpu.num_gpr)
+        block_gen = BasicBlockGenerator(config, memory, reg_fsm)
+
+        for _ in range(50):
+            enc, marker = block_gen._generate_jalr_instruction(0x80000000)
+            assert enc.rs1 != 0
+            assert marker is not None and marker.target_reg != 0
+
+        for _ in range(50):
+            enc, marker = block_gen._generate_branch_instruction(0x80000000)
+            assert enc.rs1 != 0
+            assert enc.rs2 != 0
+            assert marker is not None and marker.target_reg != 0
 
 
 class TestBasicBlock:
