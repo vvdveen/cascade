@@ -124,11 +124,17 @@ class Fuzzer:
         # Check if RTL simulation is available
         if self.config.rtl_model_path:
             self.rtl_runner = RTLRunner(self.config)
-            available, msg = self.rtl_runner.check_verilator_available()
-            if not available:
-                logger.warning(f"Verilator not available: {msg}")
-                logger.warning("Using mock RTL runner")
-                self.rtl_runner = MockRTLRunner(self.config)
+            # Check if pre-built simulation binary exists
+            sim_binary = self.rtl_runner._get_sim_binary()
+            if sim_binary is None:
+                # No pre-built binary, check if we can build with Verilator
+                available, msg = self.rtl_runner.check_verilator_available()
+                if not available:
+                    logger.warning(f"No simulation binary found and Verilator not available: {msg}")
+                    logger.warning("Using mock RTL runner")
+                    self.rtl_runner = MockRTLRunner(self.config)
+            else:
+                logger.info(f"Using RTL simulation binary: {sim_binary}")
         else:
             logger.warning("RTL model path not configured, using mock runner")
             self.rtl_runner = MockRTLRunner(self.config)
@@ -243,7 +249,7 @@ class Fuzzer:
             completed = 0
             executed = 0
             bugs_found = 0
-            last_print = time.time()
+            last_completed = 0
             while completed < num_programs:
                 try:
                     worker_id, executed_delta, bug_delta = progress_queue.get(timeout=0.1)
@@ -255,10 +261,10 @@ class Fuzzer:
                 except queue.Empty:
                     pass
 
-                now = time.time()
-                if now - last_print >= 0.2 or completed == num_programs:
+                # Only print when progress was made
+                if completed > last_completed:
                     self._print_progress(completed, executed, bugs_found, num_programs, worker_done, worker_totals)
-                    last_print = now
+                    last_completed = completed
 
                 if all(f.done() for f in futures):
                     for future in futures:
@@ -288,12 +294,11 @@ class Fuzzer:
 
         if not iss_result.success:
             self.stats.iss_errors += 1
-            if iss_result.timeout:
-                logger.debug(f"ISS timeout at iteration {iteration}")
+            logger.warning(f"ISS failed at iteration {iteration}: {iss_result.error_message}")
             return
 
         if iss_result.feedback is None:
-            logger.warning(f"No ISS feedback at iteration {iteration}")
+            logger.debug(f"No ISS feedback at iteration {iteration}")
             return
 
         # 3. Generate ultimate program
@@ -628,33 +633,44 @@ def _split_work(total: int, workers: int) -> List[int]:
 def _worker_fuzz(config: FuzzerConfig, start_index: int, count: int,
                  worker_id: int, progress_queue: multiprocessing.Queue) -> Tuple[FuzzerStats, List[BugReport]]:
     """Worker process entrypoint for parallel fuzzing."""
-    import sys
-    print(f"[Worker {worker_id}] Starting, count={count}", file=sys.stderr, flush=True)
+    # Set up worker-specific logging
+    worker_log = config.output_dir / f"worker_{worker_id}.log"
+    worker_log.parent.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.FileHandler(worker_log)
+    file_handler.setFormatter(logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    ))
+    worker_logger = logging.getLogger(f'cascade.worker{worker_id}')
+    worker_logger.addHandler(file_handler)
+    worker_logger.setLevel(logging.DEBUG)
+
+    worker_logger.info(f"Worker {worker_id} starting, count={count}")
+
     try:
         fuzzer = Fuzzer(config)
     except Exception as e:
-        print(f"[Worker {worker_id}] Failed to create Fuzzer: {e}", file=sys.stderr, flush=True)
+        worker_logger.error(f"Failed to create Fuzzer: {e}", exc_info=True)
         raise
-    print(f"[Worker {worker_id}] Fuzzer created", file=sys.stderr, flush=True)
+
+    worker_logger.info(f"Worker {worker_id} fuzzer created")
     fuzzer.stats = FuzzerStats()
     fuzzer.bugs = []
 
     for i in range(count):
         iteration = start_index + i
-        if i == 0:
-            print(f"[Worker {worker_id}] First iteration starting", file=sys.stderr, flush=True)
         try:
             prev_executed = fuzzer.stats.programs_executed
             prev_bugs = fuzzer.stats.bugs_found
             fuzzer._fuzz_iteration(iteration)
+            if i < 3:  # Log first few iterations
+                worker_logger.info(f"Iteration {iteration}: generated={fuzzer.stats.programs_generated}, executed={fuzzer.stats.programs_executed}, iss_errors={fuzzer.stats.iss_errors}")
         except Exception as e:
-            print(f"[Worker {worker_id}] Error at iteration {iteration}: {e}", file=sys.stderr, flush=True)
+            worker_logger.error(f"Error at iteration {iteration}: {e}", exc_info=True)
         executed_delta = fuzzer.stats.programs_executed - prev_executed
         bug_delta = fuzzer.stats.bugs_found - prev_bugs
         progress_queue.put((worker_id, executed_delta, bug_delta))
-        if i == 0:
-            print(f"[Worker {worker_id}] First iteration done, sent to queue", file=sys.stderr, flush=True)
 
+    worker_logger.info(f"Worker {worker_id} finished")
     return fuzzer.stats, fuzzer.bugs
 
 
