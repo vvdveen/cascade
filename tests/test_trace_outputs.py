@@ -38,6 +38,7 @@ class FakeRTLRunner:
     def __init__(self, result, vcd_pcs):
         self._result = result
         self._vcd_pcs = list(vcd_pcs)
+        self.config = type("Config", (), {"rtl_timeout": 0})()
 
     def run(self, _program):
         return self._result

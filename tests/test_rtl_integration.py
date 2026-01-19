@@ -14,10 +14,14 @@ from cascade.config import (
 )
 from cascade.execution.rtl_runner import RTLRunner
 from cascade.execution.elf_writer import write_hex
+from cascade.execution.iss_runner import ISSRunner
 from cascade.generator.basic_block import BasicBlock
-from cascade.generator.ultimate import UltimateProgram
+from cascade.generator.ultimate import UltimateProgram, ISSFeedback
+from cascade.generator.intermediate import IntermediateProgram, ProgramDescriptor
 from cascade.isa.encoding import EncodedInstruction
 from cascade.isa.instructions import ADDI, EBREAK, JAL, LW, LUI, SW
+from cascade.fuzzer import Fuzzer
+from cascade.reduction.reducer import ReductionResult
 
 
 def _get_rtl_runner() -> RTLRunner:
@@ -68,6 +72,27 @@ def _get_rtl_runner_for(cpu_name: str, rtl_path: Path) -> RTLRunner:
     return runner
 
 
+class _FixedIntermediateGen:
+    def __init__(self, program: IntermediateProgram):
+        self._program = program
+
+    def generate(self, seed=None):
+        return self._program
+
+
+class _FixedUltimateGen:
+    def __init__(self, program: UltimateProgram):
+        self._program = program
+
+    def generate(self, _intermediate, _feedback):
+        return self._program
+
+
+class _NoopReducer:
+    def reduce(self, program, feedback=None):
+        return ReductionResult(original_size=1, reduced_size=0, reduced_program=None)
+
+
 def _make_program(runner: RTLRunner, instructions: list[EncodedInstruction]) -> UltimateProgram:
     code_start = runner.config.memory.code_start
     block = BasicBlock(start_addr=code_start, block_id=0)
@@ -80,6 +105,22 @@ def _make_program(runner: RTLRunner, instructions: list[EncodedInstruction]) -> 
         code_end=code_start + len(instructions) * 4,
         data_start=runner.config.memory.data_start,
         data_end=runner.config.memory.data_start + runner.config.memory.data_size,
+    )
+
+
+def _make_intermediate(seed: int, runner: RTLRunner) -> IntermediateProgram:
+    code_start = runner.config.memory.code_start
+    block = BasicBlock(start_addr=code_start, block_id=0)
+    block.instructions = [EncodedInstruction(ADDI, rd=1, rs1=0, imm=0)]
+    block.terminator = EncodedInstruction(EBREAK)
+    return IntermediateProgram(
+        blocks=[block],
+        entry_addr=code_start,
+        code_start=code_start,
+        code_end=code_start + 8,
+        data_start=runner.config.memory.data_start,
+        data_end=runner.config.memory.data_start + runner.config.memory.data_size,
+        descriptor=ProgramDescriptor(seed=seed, num_blocks=1),
     )
 
 
@@ -240,3 +281,102 @@ def test_kronos_trace_writes_vcd():
         trace_dir = Path(tmpdir) / "rtl_trace"
         runner.capture_trace(program, trace_dir)
         assert any(trace_dir.glob("*.vcd"))
+
+
+def _resolve_spike_path() -> Path:
+    env_path = os.environ.get("CASCADE_SPIKE_PATH")
+    if env_path:
+        return Path(env_path)
+    default_path = FuzzerConfig().spike_path
+    if default_path.exists():
+        return default_path
+    fallback = Path.home() / ".local" / "riscv" / "bin" / "spike"
+    return fallback
+
+
+def _skip_if_no_spike(spike_path: Path):
+    if not spike_path.exists():
+        pytest.skip(f"Spike not available at {spike_path}")
+
+
+def _require_rtl_binary(runner: RTLRunner):
+    if runner._get_sim_binary() is None:
+        ok, msg = runner.build_simulation()
+        if not ok:
+            pytest.skip(f"RTL simulation binary not available: {msg}")
+
+
+def test_end_to_end_good_vcd_output(tmp_path):
+    rtl_path = Path(os.environ.get("CASCADE_RTL_PATH", "deps/picorv32"))
+    spike_path = _resolve_spike_path()
+    cpu = PICORV32_CONFIG
+    memory = FuzzerConfig().memory
+    config = FuzzerConfig(
+        cpu=cpu,
+        memory=memory,
+        output_dir=tmp_path,
+        rtl_model_path=rtl_path,
+        rtl_timeout=2000,
+        spike_path=spike_path,
+    )
+    _skip_if_no_spike(config.spike_path)
+    fuzzer = Fuzzer(config)
+    fuzzer.iss_runner = ISSRunner(config)
+    fuzzer.rtl_runner = RTLRunner(config)
+    _require_rtl_binary(fuzzer.rtl_runner)
+
+    ultimate = _make_program(
+        fuzzer.rtl_runner,
+        [
+            EncodedInstruction(ADDI, rd=1, rs1=0, imm=0),
+            EncodedInstruction(EBREAK),
+        ],
+    )
+    intermediate = _make_intermediate(seed=101, runner=fuzzer.rtl_runner)
+    fuzzer.intermediate_gen = _FixedIntermediateGen(intermediate)
+    fuzzer.ultimate_gen = _FixedUltimateGen(ultimate)
+    fuzzer.reducer = _NoopReducer()
+
+    fuzzer._fuzz_iteration(0)
+
+    good_dirs = list((tmp_path / cpu.name / "good").glob("good_*"))
+    assert len(good_dirs) == 1
+    assert (good_dirs[0] / "ultimate.vcd").exists()
+
+
+def test_end_to_end_bug_vcd_output(tmp_path):
+    rtl_path = Path(os.environ.get("CASCADE_RTL_PATH", "deps/picorv32"))
+    spike_path = _resolve_spike_path()
+    cpu = PICORV32_CONFIG
+    memory = FuzzerConfig().memory
+    config = FuzzerConfig(
+        cpu=cpu,
+        memory=memory,
+        output_dir=tmp_path,
+        rtl_model_path=rtl_path,
+        rtl_timeout=1,
+        spike_path=spike_path,
+    )
+    _skip_if_no_spike(config.spike_path)
+    fuzzer = Fuzzer(config)
+    fuzzer.iss_runner = ISSRunner(config)
+    fuzzer.rtl_runner = RTLRunner(config)
+    _require_rtl_binary(fuzzer.rtl_runner)
+
+    ultimate = _make_program(
+        fuzzer.rtl_runner,
+        [
+            EncodedInstruction(ADDI, rd=1, rs1=0, imm=0),
+            EncodedInstruction(EBREAK),
+        ],
+    )
+    intermediate = _make_intermediate(seed=202, runner=fuzzer.rtl_runner)
+    fuzzer.intermediate_gen = _FixedIntermediateGen(intermediate)
+    fuzzer.ultimate_gen = _FixedUltimateGen(ultimate)
+    fuzzer.reducer = _NoopReducer()
+
+    fuzzer._fuzz_iteration(0)
+
+    bug_dirs = list((tmp_path / cpu.name / "bugs").glob("bug_*"))
+    assert len(bug_dirs) == 1
+    assert (bug_dirs[0] / "ultimate.vcd").exists()

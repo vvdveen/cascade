@@ -396,7 +396,10 @@ class Fuzzer:
                 iss_pcs = []
             try:
                 trace_dir = bug_dir / "rtl_trace"
-                rtl_pcs = self._write_rtl_trace(trace_dir, ultimate)
+                trace_timeout = None
+                if rtl_result.timeout:
+                    trace_timeout = max(self.config.rtl_timeout, 2000)
+                rtl_pcs = self._write_rtl_trace(trace_dir, ultimate, timeout_override=trace_timeout)
                 self._copy_rtl_trace_summary(trace_dir, bug_dir / "rtl_trace_pc.txt")
                 if rtl_result.timeout:
                     self._append_trace_summary(bug_dir, trace_dir)
@@ -788,10 +791,20 @@ class Fuzzer:
                 trace_file.write(f"0x{pc:08x}\n")
         return pcs
 
-    def _write_rtl_trace(self, output_dir: Path, program: UltimateProgram) -> List[int]:
+    def _write_rtl_trace(self, output_dir: Path,
+                         program: UltimateProgram,
+                         timeout_override: Optional[int] = None) -> List[int]:
         """Run RTL with tracing enabled and write PC trace to disk."""
         output_dir.mkdir(parents=True, exist_ok=True)
-        result = self.rtl_runner.capture_trace(program, output_dir)
+        original_timeout = None
+        if timeout_override is not None:
+            original_timeout = self.rtl_runner.config.rtl_timeout
+            self.rtl_runner.config.rtl_timeout = timeout_override
+        try:
+            result = self.rtl_runner.capture_trace(program, output_dir)
+        finally:
+            if original_timeout is not None:
+                self.rtl_runner.config.rtl_timeout = original_timeout
         vcd_path = output_dir / "testbench.vcd"
         if self.config.cpu.name == "kronos":
             vcd_path = output_dir / "program.vcd"
