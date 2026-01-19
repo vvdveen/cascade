@@ -826,10 +826,11 @@ class Fuzzer:
                 trace_file.write("# no pcs captured\n")
                 return []
             for pc in pcs:
-                trace_file.write(f"0x{pc:08x}\n")
                 line = disasm.get(pc)
                 if line:
-                    trace_file.write(f"{line}\n")
+                    trace_file.write(f"0x{pc:08x} | {line}\n")
+                else:
+                    trace_file.write(f"0x{pc:08x}\n")
         return pcs
 
     def _write_rtl_trace(self, output_dir: Path,
@@ -872,10 +873,11 @@ class Fuzzer:
                 trace_file.write("# no pcs captured\n")
                 return []
             for pc in pcs:
-                trace_file.write(f"0x{pc:08x}\n")
                 line = disasm.get(pc)
                 if line:
-                    trace_file.write(f"{line}\n")
+                    trace_file.write(f"0x{pc:08x} | {line}\n")
+                else:
+                    trace_file.write(f"0x{pc:08x}\n")
         return pcs
 
     def _disassemble_elf(self, elf_path: Optional[Path]) -> dict[int, str]:
