@@ -1470,6 +1470,14 @@ def main():
         num_workers=args.workers,
     )
 
+    rtl_runner = RTLRunner(config)
+    if rtl_runner._get_sim_binary() is None:
+        logger.error(
+            "RTL simulation binary not available. "
+            f"Check --rtl-path ({config.rtl_model_path}) and build the model."
+        )
+        sys.exit(1)
+
     # Create and run fuzzer
     fuzzer = Fuzzer(config)
 
