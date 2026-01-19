@@ -408,7 +408,12 @@ class Fuzzer:
             except Exception as e:
                 logger.error(f"Failed to save bug artifacts at iteration {iteration}: {e}")
 
-        if not rtl_result.success and not rtl_result.bug_detected:
+        if rtl_result.success and not rtl_result.bug_detected:
+            try:
+                self._report_good_run(iteration, intermediate, ultimate, rtl_result)
+            except Exception as e:
+                logger.error(f"Failed to save good run at iteration {iteration}: {e}")
+        elif not rtl_result.success and not rtl_result.bug_detected:
             self.stats.rtl_errors += 1
 
     def _report_bug_pre(self, iteration: int,
@@ -468,6 +473,7 @@ class Fuzzer:
             f.write(f"Seed: {intermediate.descriptor.seed if intermediate.descriptor else 'unknown'}\n")
             f.write(f"Blocks: {len(ultimate.blocks)}\n")
             f.write(f"Cycle count: {rtl_result.cycle_count}\n")
+            f.write(f"RTL runtime (s): {rtl_result.runtime_seconds:.6f}\n")
             f.write(f"RTL timeout: {rtl_result.timeout}\n")
             f.write("Reduction: pending\n")
             f.write(f"RTL output:\n{rtl_result.raw_output}\n")
@@ -512,6 +518,26 @@ class Fuzzer:
             f.write(f"Blocks: {len(ultimate.blocks)}\n")
             f.write("ISS timeout: True\n")
             f.write(f"ISS output:\n{iss_result.raw_output}\n")
+
+    def _report_good_run(self, iteration: int,
+                         intermediate: IntermediateProgram,
+                         ultimate: UltimateProgram,
+                         rtl_result) -> None:
+        """Save metadata for successful RTL runs in output/good."""
+        timestamp = datetime.now()
+        run_id = f"good_{timestamp.strftime('%Y%m%d_%H%M%S')}_{iteration}"
+        good_dir = self.output_dir / "good" / run_id
+        good_dir.mkdir(parents=True, exist_ok=True)
+
+        meta_path = good_dir / "metadata.txt"
+        with open(meta_path, "w") as f:
+            f.write(f"Run ID: {run_id}\n")
+            f.write(f"Timestamp: {timestamp}\n")
+            f.write(f"Seed: {intermediate.descriptor.seed if intermediate.descriptor else 'unknown'}\n")
+            f.write(f"Blocks: {len(ultimate.blocks)}\n")
+            f.write(f"Cycle count: {rtl_result.cycle_count}\n")
+            f.write(f"RTL runtime (s): {rtl_result.runtime_seconds:.6f}\n")
+            f.write(f"RTL timeout: {rtl_result.timeout}\n")
 
     def _report_bug_post(self, bug_dir: Path, reduction) -> None:
         """Save reduced artifacts and append reduction metadata."""

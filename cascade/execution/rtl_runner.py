@@ -10,6 +10,7 @@ import tempfile
 import shutil
 import re
 import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -40,6 +41,12 @@ class RTLResult:
 
     # Raw output
     raw_output: str = ""
+
+    # Wall-clock runtime in seconds
+    runtime_seconds: float = 0.0
+
+    # Wall-clock runtime in seconds
+    runtime_seconds: float = 0.0
 
 
 class RTLRunner:
@@ -123,6 +130,7 @@ class RTLRunner:
             f"{sig_end:08x} T end_signature\n"
         )
 
+        start_time = time.perf_counter()
         try:
             proc = subprocess.run(
                 [str(sim_binary), str(bin_path), str(sig_path)],
@@ -145,6 +153,8 @@ class RTLRunner:
             result.error_message = "RTL simulation timed out - potential bug"
         except Exception as e:
             result.error_message = str(e)
+        finally:
+            result.runtime_seconds = time.perf_counter() - start_time
 
         return result
 
@@ -166,6 +176,7 @@ class RTLRunner:
         # Build simulation command
         cmd = self._build_command(sim_binary, hex_path, elf_path, extra_args)
 
+        start_time = time.perf_counter()
         try:
             # Run simulation with timeout
             timeout_seconds = self.config.rtl_timeout / 1000.0
@@ -194,6 +205,8 @@ class RTLRunner:
 
         except Exception as e:
             result.error_message = str(e)
+        finally:
+            result.runtime_seconds = time.perf_counter() - start_time
 
         return result
 
