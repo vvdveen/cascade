@@ -296,14 +296,14 @@ def _resolve_spike_path() -> Path:
 
 def _skip_if_no_spike(spike_path: Path):
     if not spike_path.exists():
-        pytest.skip(f"Spike not available at {spike_path}")
+        pytest.fail(f"Spike not available at {spike_path}")
 
 
 def _require_rtl_binary(runner: RTLRunner):
     if runner._get_sim_binary() is None:
         ok, msg = runner.build_simulation()
         if not ok:
-            pytest.skip(f"RTL simulation binary not available: {msg}")
+            pytest.fail(f"RTL simulation binary not available: {msg}")
 
 
 def test_end_to_end_good_vcd_output(tmp_path):
