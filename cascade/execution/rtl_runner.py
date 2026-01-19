@@ -219,6 +219,12 @@ class RTLRunner:
             return None
 
         # Look for pre-built binary
+        if self.config.cpu.name == "kronos":
+            kronos_compliance = self.rtl_model_path / "build" / "output" / "bin" / "kronos_compliance"
+            if kronos_compliance.exists():
+                self._sim_binary = kronos_compliance.resolve()
+                return self._sim_binary
+
         possible_binaries = [
             self.rtl_model_path / "obj_dir" / "Vtestbench",
             self.rtl_model_path / "obj_dir" / "Vkronos",
@@ -242,7 +248,7 @@ class RTLRunner:
                 continue
             for candidate in base.iterdir():
                 if candidate.is_file() and os.access(candidate, os.X_OK):
-                    if candidate.name.startswith("V") or candidate.name in {"sim", "testbench"}:
+                    if candidate.name.startswith("V") or candidate.name in {"sim", "testbench", "kronos_compliance"}:
                         self._sim_binary = candidate.resolve()
                         return self._sim_binary
 
