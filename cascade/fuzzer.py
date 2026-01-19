@@ -387,13 +387,15 @@ class Fuzzer:
             bug, bug_dir = self._report_bug_pre(
                 iteration, intermediate, ultimate, rtl_result
             )
-            if rtl_result.timeout:
-                try:
-                    trace_dir = bug_dir / "rtl_trace"
-                    self.rtl_runner.capture_trace(ultimate, trace_dir)
+            try:
+                trace_dir = bug_dir / "rtl_trace"
+                rtl_pcs = self._write_rtl_trace(trace_dir, ultimate)
+                iss_pcs = self._write_iss_trace(bug_dir / "iss_trace_ultimate.txt", ultimate)
+                self._write_trace_comparison(bug_dir / "pc_trace_compare.txt", iss_pcs, rtl_pcs)
+                if rtl_result.timeout:
                     self._append_trace_summary(bug_dir, trace_dir)
-                except Exception as e:
-                    logger.error(f"Failed to capture RTL trace at iteration {iteration}: {e}")
+            except Exception as e:
+                logger.error(f"Failed to capture RTL trace at iteration {iteration}: {e}")
             reduction = None
             try:
                 reduction = self.reducer.reduce(ultimate, iss_result.feedback)
@@ -410,7 +412,10 @@ class Fuzzer:
 
         if rtl_result.success and not rtl_result.bug_detected:
             try:
-                self._report_good_run(iteration, intermediate, ultimate, rtl_result)
+                good_dir = self._report_good_run(iteration, intermediate, ultimate, rtl_result)
+                rtl_pcs = self._write_rtl_trace(good_dir / "rtl_trace", ultimate)
+                iss_pcs = self._write_iss_trace(good_dir / "iss_trace_ultimate.txt", ultimate)
+                self._write_trace_comparison(good_dir / "pc_trace_compare.txt", iss_pcs, rtl_pcs)
             except Exception as e:
                 logger.error(f"Failed to save good run at iteration {iteration}: {e}")
         elif not rtl_result.success and not rtl_result.bug_detected:
@@ -464,8 +469,6 @@ class Fuzzer:
         )
         self._write_rerun_iss_script(iss_intermediate_script_path, intermediate_path)
         self._write_rerun_iss_script(iss_ultimate_script_path, ultimate_path)
-        self._write_iss_trace(bug_dir / "iss_trace_ultimate.txt", ultimate)
-
         # Save metadata
         meta_path = bug_dir / "metadata.txt"
         with open(meta_path, 'w') as f:
@@ -524,7 +527,7 @@ class Fuzzer:
     def _report_good_run(self, iteration: int,
                          intermediate: IntermediateProgram,
                          ultimate: UltimateProgram,
-                         rtl_result) -> None:
+                         rtl_result) -> Path:
         """Save metadata for successful RTL runs in output/good."""
         timestamp = datetime.now()
         run_id = f"good_{timestamp.strftime('%Y%m%d_%H%M%S')}_{iteration}"
@@ -541,6 +544,7 @@ class Fuzzer:
             f.write(f"Cycle count: {rtl_result.cycle_count}\n")
             f.write(f"RTL runtime (s): {rtl_result.runtime_seconds:.6f}\n")
             f.write(f"RTL timeout: {rtl_result.timeout}\n")
+        return good_dir
 
     def _report_bug_post(self, bug_dir: Path, reduction) -> None:
         """Save reduced artifacts and append reduction metadata."""
@@ -659,6 +663,8 @@ class Fuzzer:
                                 candidates["rvfi_pc_wdata"] = ident
                             elif name.endswith("reg_pc"):
                                 candidates["reg_pc"] = ident
+                            elif name.endswith("instr_addr"):
+                                candidates["instr_addr"] = ident
                             elif name.endswith("mem_axi_araddr"):
                                 candidates["mem_axi_araddr"] = ident
                             elif name.endswith("trace_data"):
@@ -671,6 +677,7 @@ class Fuzzer:
         priority = [
             ("rvfi_pc_wdata", "pc"),
             ("reg_pc", "pc"),
+            ("instr_addr", "pc"),
             ("mem_axi_araddr", "pc"),
             ("trace_data", "trace"),
         ]
@@ -744,18 +751,60 @@ class Fuzzer:
             lines.append("")
         return "\n".join(lines).rstrip() + "\n"
 
-    def _write_iss_trace(self, output_path: Path, program: UltimateProgram) -> None:
+    def _write_iss_trace(self, output_path: Path, program: UltimateProgram) -> List[int]:
         """Write ISS PC trace for a program if Spike is available."""
         if isinstance(self.iss_runner, MockISSRunner):
-            return
+            return []
         success, pcs, _ = self.iss_runner.run_trace(program)
         if not pcs:
-            return
+            return []
         with open(output_path, "w") as trace_file:
             trace_file.write("# ISS PC trace\n")
             trace_file.write(f"# success={success}\n")
             for pc in pcs:
                 trace_file.write(f"0x{pc:08x}\n")
+        return pcs
+
+    def _write_rtl_trace(self, output_dir: Path, program: UltimateProgram) -> List[int]:
+        """Run RTL with tracing enabled and write PC trace to disk."""
+        output_dir.mkdir(parents=True, exist_ok=True)
+        result = self.rtl_runner.capture_trace(program, output_dir)
+        vcd_path = output_dir / "testbench.vcd"
+        if self.config.cpu.name == "kronos":
+            vcd_path = output_dir / "program.vcd"
+        pcs, source = self._extract_pc_trace(vcd_path, max_entries=None)
+        trace_path = output_dir / "rtl_trace_pc.txt"
+        with trace_path.open("w") as trace_file:
+            trace_file.write("# RTL PC trace\n")
+            trace_file.write(f"# source={source}\n")
+            trace_file.write(f"# success={result.success} timeout={result.timeout}\n")
+            for pc in pcs:
+                trace_file.write(f"0x{pc:08x}\n")
+        return pcs
+
+    def _write_trace_comparison(self, output_path: Path,
+                                iss_pcs: List[int], rtl_pcs: List[int]) -> None:
+        """Write a comparison summary between ISS and RTL PC traces."""
+        with open(output_path, "w") as out:
+            out.write("# PC trace comparison (ISS vs RTL)\n")
+            out.write(f"ISS samples: {len(iss_pcs)}\n")
+            out.write(f"RTL samples: {len(rtl_pcs)}\n")
+            if not iss_pcs or not rtl_pcs:
+                out.write("No comparison available (missing trace)\n")
+                return
+            min_len = min(len(iss_pcs), len(rtl_pcs))
+            divergence_idx = None
+            for i in range(min_len):
+                if iss_pcs[i] != rtl_pcs[i]:
+                    divergence_idx = i
+                    break
+            if divergence_idx is None:
+                out.write("No divergence within shared prefix\n")
+                out.write(f"Shared length: {min_len}\n")
+                return
+            out.write(f"Divergence index: {divergence_idx}\n")
+            out.write(f"ISS PC: 0x{iss_pcs[divergence_idx]:08x}\n")
+            out.write(f"RTL PC: 0x{rtl_pcs[divergence_idx]:08x}\n")
 
     def _write_rerun_script(self, script_path: Path, seed: int) -> None:
         """Write a helper script to re-run the RTL simulator for a bug."""

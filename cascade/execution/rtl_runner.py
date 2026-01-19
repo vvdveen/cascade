@@ -264,6 +264,52 @@ class RTLRunner:
     def capture_trace(self, program: UltimateProgram, output_dir: Path) -> RTLResult:
         """Run RTL simulation with trace/vcd enabled and store artifacts."""
         output_dir.mkdir(parents=True, exist_ok=True)
+        if self.config.cpu.name == "kronos":
+            bin_path = output_dir / "program.bin"
+            sig_path = output_dir / "signature.output"
+            nm_path = output_dir / "program.nm"
+            write_raw_binary(program, bin_path)
+            tohost = program.data_start
+            sig_begin = program.data_start + 0x10
+            sig_end = program.data_start + 0x20
+            nm_path.write_text(
+                f"{tohost:08x} T tohost\n"
+                f"{sig_begin:08x} T begin_signature\n"
+                f"{sig_end:08x} T end_signature\n"
+            )
+            sim_binary = self._get_sim_binary()
+            if sim_binary is None:
+                result = RTLResult()
+                result.error_message = "RTL simulation binary not available"
+                return result
+            result = RTLResult()
+            start_time = time.perf_counter()
+            try:
+                proc = subprocess.run(
+                    [str(sim_binary), str(bin_path), str(sig_path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=self.config.rtl_timeout / 1000.0,
+                    cwd=str(output_dir)
+                )
+                result.raw_output = proc.stdout + proc.stderr
+                result.exit_code = proc.returncode
+                result.success = proc.returncode == 0
+                self._parse_output(result)
+                if "Simulation Failed" in result.raw_output:
+                    result.success = False
+                    result.timeout = True
+                    result.bug_detected = True
+            except subprocess.TimeoutExpired:
+                result.timeout = True
+                result.bug_detected = True
+                result.error_message = "RTL simulation timed out - potential bug"
+            except Exception as e:
+                result.error_message = str(e)
+            finally:
+                result.runtime_seconds = time.perf_counter() - start_time
+            return result
+
         hex_path = output_dir / "program.hex"
         elf_path = output_dir / "program.elf"
         write_hex(program, hex_path, base_address=0)
