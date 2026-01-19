@@ -14,6 +14,7 @@ import queue
 import os
 import fcntl
 import shutil
+import subprocess
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Tuple
 from dataclasses import dataclass, field
@@ -389,8 +390,16 @@ class Fuzzer:
                 iteration, intermediate, ultimate, rtl_result
             )
             try:
-                iss_pcs = self._write_iss_trace(bug_dir / "iss_trace_ultimate.txt", ultimate)
-                self._write_iss_trace(bug_dir / "iss_trace_intermediate.txt", intermediate)
+                iss_pcs = self._write_iss_trace(
+                    bug_dir / "iss_trace_ultimate.txt",
+                    ultimate,
+                    elf_path=bug_dir / "ultimate.elf"
+                )
+                self._write_iss_trace(
+                    bug_dir / "iss_trace_intermediate.txt",
+                    intermediate,
+                    elf_path=bug_dir / "intermediate.elf"
+                )
             except Exception as e:
                 logger.error(f"Failed to capture ISS trace at iteration {iteration}: {e}")
                 iss_pcs = []
@@ -399,7 +408,12 @@ class Fuzzer:
                 trace_timeout = None
                 if rtl_result.timeout:
                     trace_timeout = max(self.config.rtl_timeout, 2000)
-                rtl_pcs = self._write_rtl_trace(trace_dir, ultimate, timeout_override=trace_timeout)
+                rtl_pcs = self._write_rtl_trace(
+                    trace_dir,
+                    ultimate,
+                    timeout_override=trace_timeout,
+                    elf_path=bug_dir / "ultimate.elf"
+                )
                 self._copy_rtl_trace_summary(trace_dir, bug_dir / "rtl_trace_pc.txt")
                 if rtl_result.timeout:
                     self._append_trace_summary(bug_dir, trace_dir)
@@ -427,14 +441,26 @@ class Fuzzer:
         if rtl_result.success and not rtl_result.bug_detected:
             try:
                 good_dir = self._report_good_run(iteration, intermediate, ultimate, rtl_result)
-                iss_pcs = self._write_iss_trace(good_dir / "iss_trace_ultimate.txt", ultimate)
-                self._write_iss_trace(good_dir / "iss_trace_intermediate.txt", intermediate)
+                iss_pcs = self._write_iss_trace(
+                    good_dir / "iss_trace_ultimate.txt",
+                    ultimate,
+                    elf_path=good_dir / "ultimate.elf"
+                )
+                self._write_iss_trace(
+                    good_dir / "iss_trace_intermediate.txt",
+                    intermediate,
+                    elf_path=good_dir / "intermediate.elf"
+                )
             except Exception as e:
                 logger.error(f"Failed to capture ISS trace at iteration {iteration}: {e}")
                 iss_pcs = []
             try:
                 trace_dir = good_dir / "rtl_trace"
-                rtl_pcs = self._write_rtl_trace(trace_dir, ultimate)
+                rtl_pcs = self._write_rtl_trace(
+                    trace_dir,
+                    ultimate,
+                    elf_path=good_dir / "ultimate.elf"
+                )
                 self._copy_rtl_trace_summary(trace_dir, good_dir / "rtl_trace_pc.txt")
             except Exception as e:
                 logger.error(f"Failed to capture RTL trace at iteration {iteration}: {e}")
@@ -559,6 +585,10 @@ class Fuzzer:
         cpu_dir = self.output_dir / self.config.cpu.name
         good_dir = cpu_dir / "good" / run_id
         good_dir.mkdir(parents=True, exist_ok=True)
+        ultimate_path = good_dir / "ultimate.elf"
+        intermediate_path = good_dir / "intermediate.elf"
+        self.elf_writer.write(ultimate, ultimate_path)
+        self.elf_writer.write(intermediate, intermediate_path)
 
         meta_path = good_dir / "metadata.txt"
         with open(meta_path, "w") as f:
@@ -579,7 +609,11 @@ class Fuzzer:
             self.elf_writer.write(reduction.reduced_program, reduced_path)
             with open(reduced_asm_path, "w") as asm_file:
                 asm_file.write(self._format_program_asm(reduction.reduced_program))
-            self._write_iss_trace(bug_dir / "iss_trace_reduced.txt", reduction.reduced_program)
+            self._write_iss_trace(
+                bug_dir / "iss_trace_reduced.txt",
+                reduction.reduced_program,
+                elf_path=reduced_path
+            )
 
         meta_path = bug_dir / "metadata.txt"
         with open(meta_path, "a") as f:
@@ -776,11 +810,15 @@ class Fuzzer:
             lines.append("")
         return "\n".join(lines).rstrip() + "\n"
 
-    def _write_iss_trace(self, output_path: Path, program: UltimateProgram) -> List[int]:
+    def _write_iss_trace(self,
+                         output_path: Path,
+                         program: UltimateProgram,
+                         elf_path: Optional[Path] = None) -> List[int]:
         """Write ISS PC trace for a program if Spike is available."""
         if isinstance(self.iss_runner, MockISSRunner):
             return []
         success, pcs, _ = self.iss_runner.run_trace(program)
+        disasm = self._disassemble_elf(elf_path) if elf_path else {}
         with open(output_path, "w") as trace_file:
             trace_file.write("# ISS PC trace\n")
             trace_file.write(f"# success={success}\n")
@@ -789,11 +827,15 @@ class Fuzzer:
                 return []
             for pc in pcs:
                 trace_file.write(f"0x{pc:08x}\n")
+                line = disasm.get(pc)
+                if line:
+                    trace_file.write(f"{line}\n")
         return pcs
 
     def _write_rtl_trace(self, output_dir: Path,
                          program: UltimateProgram,
-                         timeout_override: Optional[int] = None) -> List[int]:
+                         timeout_override: Optional[int] = None,
+                         elf_path: Optional[Path] = None) -> List[int]:
         """Run RTL with tracing enabled and write PC trace to disk."""
         output_dir.mkdir(parents=True, exist_ok=True)
         original_timeout = None
@@ -820,6 +862,7 @@ class Fuzzer:
                 shutil.copyfile(vcd_path, output_dir.parent / "ultimate.vcd")
             except Exception as e:
                 logger.error(f"Failed to save VCD trace: {e}")
+        disasm = self._disassemble_elf(elf_path) if elf_path else {}
         trace_path = output_dir / "rtl_trace_pc.txt"
         with trace_path.open("w") as trace_file:
             trace_file.write("# RTL PC trace\n")
@@ -830,7 +873,59 @@ class Fuzzer:
                 return []
             for pc in pcs:
                 trace_file.write(f"0x{pc:08x}\n")
+                line = disasm.get(pc)
+                if line:
+                    trace_file.write(f"{line}\n")
         return pcs
+
+    def _disassemble_elf(self, elf_path: Optional[Path]) -> dict[int, str]:
+        """Return a mapping of PC to objdump disassembly lines."""
+        if elf_path is None or not elf_path.exists():
+            return {}
+        objdump = self._find_objdump()
+        if objdump is None:
+            return {}
+        try:
+            result = subprocess.run(
+                [objdump, "-d", str(elf_path)],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+        except Exception:
+            return {}
+        if result.returncode != 0:
+            return {}
+        disasm = {}
+        for line in result.stdout.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if ":" not in stripped:
+                continue
+            addr_text = stripped.split(":", 1)[0].strip()
+            try:
+                addr = int(addr_text, 16)
+            except ValueError:
+                continue
+            disasm[addr] = stripped
+        return disasm
+
+    def _find_objdump(self) -> Optional[str]:
+        """Find a RISC-V objdump binary."""
+        candidates = [
+            "riscv64-unknown-elf-objdump",
+            "riscv32-unknown-elf-objdump",
+            "riscv64-elf-objdump",
+            "riscv32-elf-objdump",
+            "riscv64-unknown-linux-gnu-objdump",
+            "riscv32-unknown-linux-gnu-objdump",
+        ]
+        for candidate in candidates:
+            path = shutil.which(candidate)
+            if path:
+                return path
+        return None
 
     def _write_trace_comparison(self, output_path: Path,
                                 iss_pcs: List[int], rtl_pcs: List[int]) -> None:
