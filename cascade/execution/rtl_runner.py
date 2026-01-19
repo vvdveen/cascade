@@ -279,8 +279,10 @@ class RTLRunner:
         if cycle_match:
             result.cycle_count = int(cycle_match.group(1))
 
+        lowered = output.lower()
+
         # Look for completion indicator
-        if 'PASS' in output or 'SUCCESS' in output or 'completed' in output.lower():
+        if 'PASS' in output or 'SUCCESS' in output or 'simulation ok' in lowered or 'completed' in lowered:
             result.success = True
         elif 'TRAP' in output:
             # PicoRV32 testbench uses TRAP on program completion.
@@ -291,7 +293,7 @@ class RTLRunner:
             result.bug_detected = True
 
         # Look for timeout indicator
-        if 'timeout' in output.lower() or 'hung' in output.lower():
+        if 'timeout' in lowered or 'hung' in lowered:
             result.timeout = True
             result.bug_detected = True
 

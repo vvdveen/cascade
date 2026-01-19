@@ -43,6 +43,31 @@ def _get_rtl_runner() -> RTLRunner:
     return runner
 
 
+def _get_rtl_runner_for(cpu_name: str, rtl_path: Path) -> RTLRunner:
+    if cpu_name == "kronos":
+        cpu = KRONOS_CONFIG
+        memory = KRONOS_MEMORY_LAYOUT
+    else:
+        cpu = PICORV32_CONFIG
+        memory = FuzzerConfig().memory
+    config = FuzzerConfig(
+        cpu=cpu,
+        memory=memory,
+        rtl_model_path=rtl_path,
+        rtl_timeout=2000,
+    )
+    runner = RTLRunner(config)
+    if cpu_name == "kronos":
+        ok, msg = runner.build_simulation()
+        if not ok:
+            pytest.skip(f"RTL simulation binary not available: {msg}")
+    elif runner._get_sim_binary() is None:
+        ok, msg = runner.build_simulation()
+        if not ok:
+            pytest.skip(f"RTL simulation binary not available: {msg}")
+    return runner
+
+
 def _make_program(runner: RTLRunner, instructions: list[EncodedInstruction]) -> UltimateProgram:
     code_start = runner.config.memory.code_start
     block = BasicBlock(start_addr=code_start, block_id=0)
@@ -155,3 +180,26 @@ def test_rtl_program_timeout_is_detected():
 
     assert result.timeout is True
     assert result.bug_detected is True
+
+
+def test_kronos_rtl_program_completes_without_timeout():
+    rtl_path = Path("deps/kronos")
+    if not rtl_path.exists():
+        pytest.skip("Kronos RTL path not available")
+    runner = _get_rtl_runner_for("kronos", rtl_path)
+    data_start = runner.config.memory.data_start
+    program = _make_program(
+        runner,
+        [
+            *_load_addr(2, data_start),
+            EncodedInstruction(ADDI, rd=1, rs1=0, imm=1),
+            EncodedInstruction(SW, rs1=2, rs2=1, imm=0),
+            EncodedInstruction(EBREAK),
+        ],
+    )
+
+    result = _run_program(runner, program)
+
+    assert result.timeout is False
+    assert result.success is True
+    assert result.bug_detected is False
