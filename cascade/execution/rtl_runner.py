@@ -306,6 +306,7 @@ class RTLRunner:
                 result.exit_code = proc.returncode
                 result.success = proc.returncode == 0
                 self._parse_output(result)
+                self._maybe_copy_kronos_vcd(result, output_dir)
                 if "Simulation Failed" in result.raw_output:
                     result.success = False
                     result.timeout = True
@@ -347,6 +348,22 @@ class RTLRunner:
         elif 'FAIL' in output or 'ERROR' in output:
             result.success = False
             result.bug_detected = True
+
+    def _maybe_copy_kronos_vcd(self, result: RTLResult, output_dir: Path) -> None:
+        """Ensure Kronos VCD ends up inside the trace directory."""
+        vcd_files = list(output_dir.glob("*.vcd"))
+        if vcd_files:
+            return
+        match = re.search(r"Waveform:\s*(.+)", result.raw_output)
+        if not match:
+            return
+        vcd_path = Path(match.group(1).strip())
+        if not vcd_path.exists():
+            return
+        try:
+            shutil.copyfile(vcd_path, output_dir / vcd_path.name)
+        except Exception:
+            return
 
         # Look for timeout indicator
         if 'timeout' in lowered or 'hung' in lowered:

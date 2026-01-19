@@ -219,3 +219,24 @@ def test_kronos_rtl_program_completes_without_timeout():
     assert result.timeout is False
     assert result.success is True
     assert result.bug_detected is False
+
+
+def test_kronos_trace_writes_vcd():
+    rtl_path = Path("deps/kronos")
+    if not rtl_path.exists():
+        pytest.skip("Kronos RTL path not available")
+    runner = _get_rtl_runner_for("kronos", rtl_path)
+    data_start = runner.config.memory.data_start
+    program = _make_program(
+        runner,
+        [
+            *_load_addr(2, data_start),
+            EncodedInstruction(ADDI, rd=1, rs1=0, imm=1),
+            EncodedInstruction(SW, rs1=2, rs2=1, imm=0),
+            EncodedInstruction(EBREAK),
+        ],
+    )
+    with tempfile.TemporaryDirectory() as tmpdir:
+        trace_dir = Path(tmpdir) / "rtl_trace"
+        runner.capture_trace(program, trace_dir)
+        assert any(trace_dir.glob("*.vcd"))
