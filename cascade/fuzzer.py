@@ -22,7 +22,8 @@ from typing import List, Optional
 
 from .config import (
     FuzzerConfig, CPUConfig, MemoryLayout, InstructionWeights,
-    Extension, PICORV32_CONFIG, VEXRISCV_CONFIG, ROCKET_CONFIG
+    Extension, PICORV32_CONFIG, KRONOS_CONFIG, KRONOS_MEMORY_LAYOUT,
+    VEXRISCV_CONFIG, ROCKET_CONFIG
 )
 from .generator.intermediate import IntermediateProgram, IntermediateProgramGenerator
 from .generator.ultimate import UltimateProgram, UltimateProgramGenerator
@@ -842,7 +843,7 @@ def main():
 
     parser.add_argument(
         "-c", "--cpu",
-        choices=["picorv32", "vexriscv", "rocket", "custom"],
+        choices=["picorv32", "kronos", "vexriscv", "rocket", "custom"],
         default="picorv32",
         help="Target CPU"
     )
@@ -900,16 +901,24 @@ def main():
     # Select CPU configuration
     if args.cpu == "picorv32":
         cpu_config = PICORV32_CONFIG
+        memory_layout = MemoryLayout()
+    elif args.cpu == "kronos":
+        cpu_config = KRONOS_CONFIG
+        memory_layout = KRONOS_MEMORY_LAYOUT
     elif args.cpu == "vexriscv":
         cpu_config = VEXRISCV_CONFIG
+        memory_layout = MemoryLayout()
     elif args.cpu == "rocket":
         cpu_config = ROCKET_CONFIG
+        memory_layout = MemoryLayout()
     else:
         cpu_config = CPUConfig(name="custom")
+        memory_layout = MemoryLayout()
 
     # Create fuzzer configuration
     config = FuzzerConfig(
         cpu=cpu_config,
+        memory=memory_layout,
         num_programs=args.num_programs,
         output_dir=args.output,
         spike_path=args.spike_path,

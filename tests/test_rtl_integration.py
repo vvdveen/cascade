@@ -8,19 +8,30 @@ import tempfile
 
 import pytest
 
-from cascade.config import FuzzerConfig, CPUConfig, Extension
+from cascade.config import (
+    FuzzerConfig, CPUConfig, Extension,
+    PICORV32_CONFIG, KRONOS_CONFIG, KRONOS_MEMORY_LAYOUT,
+)
 from cascade.execution.rtl_runner import RTLRunner
 from cascade.execution.elf_writer import write_hex
 from cascade.generator.basic_block import BasicBlock
 from cascade.generator.ultimate import UltimateProgram
 from cascade.isa.encoding import EncodedInstruction
-from cascade.isa.instructions import ADDI, EBREAK, JAL, LW
+from cascade.isa.instructions import ADDI, EBREAK, JAL, LW, LUI, SW
 
 
 def _get_rtl_runner() -> RTLRunner:
     rtl_path = Path(os.environ.get("CASCADE_RTL_PATH", "deps/picorv32"))
+    cpu_name = os.environ.get("CASCADE_RTL_CPU", "picorv32")
+    if cpu_name == "kronos":
+        cpu = KRONOS_CONFIG
+        memory = KRONOS_MEMORY_LAYOUT
+    else:
+        cpu = PICORV32_CONFIG
+        memory = FuzzerConfig().memory
     config = FuzzerConfig(
-        cpu=CPUConfig(name="picorv32", xlen=32, extensions={Extension.I, Extension.M}),
+        cpu=cpu,
+        memory=memory,
         rtl_model_path=rtl_path,
         rtl_timeout=2000,
     )
@@ -50,6 +61,8 @@ def _make_program(runner: RTLRunner, instructions: list[EncodedInstruction]) -> 
 def _run_program(runner: RTLRunner, program: UltimateProgram, extra_args: list[str] | None = None):
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
+        if runner.config.cpu.name == "kronos":
+            return runner.run(program)
         hex_path = tmpdir / "program.hex"
         elf_path = tmpdir / "program.elf"
         write_hex(program, hex_path, base_address=0)
@@ -59,13 +72,25 @@ def _run_program(runner: RTLRunner, program: UltimateProgram, extra_args: list[s
 
 def test_rtl_program_completes_without_timeout():
     runner = _get_rtl_runner()
-    program = _make_program(
-        runner,
-        [
-            EncodedInstruction(ADDI, rd=1, rs1=0, imm=0),
-            EncodedInstruction(EBREAK),
-        ],
-    )
+    if runner.config.cpu.name == "kronos":
+        program = _make_program(
+            runner,
+            [
+                EncodedInstruction(LUI, rd=2, imm=0x00001000),
+                EncodedInstruction(ADDI, rd=2, rs1=2, imm=0),
+                EncodedInstruction(ADDI, rd=1, rs1=0, imm=1),
+                EncodedInstruction(SW, rs1=2, rs2=1, imm=0),
+                EncodedInstruction(EBREAK),
+            ],
+        )
+    else:
+        program = _make_program(
+            runner,
+            [
+                EncodedInstruction(ADDI, rd=1, rs1=0, imm=0),
+                EncodedInstruction(EBREAK),
+            ],
+        )
 
     result = _run_program(runner, program, extra_args=["+noerror"])
 
@@ -76,18 +101,35 @@ def test_rtl_program_completes_without_timeout():
 
 def test_rtl_program_exception_traps():
     runner = _get_rtl_runner()
-    program = _make_program(
-        runner,
-        [
-            EncodedInstruction(LW, rd=1, rs1=0, imm=1),
-            EncodedInstruction(EBREAK),
-        ],
-    )
+    if runner.config.cpu.name == "kronos":
+        program = _make_program(
+            runner,
+            [
+                EncodedInstruction(LW, rd=1, rs1=0, imm=1),
+                EncodedInstruction(LUI, rd=2, imm=0x00001000),
+                EncodedInstruction(ADDI, rd=2, rs1=2, imm=0),
+                EncodedInstruction(ADDI, rd=1, rs1=0, imm=1),
+                EncodedInstruction(SW, rs1=2, rs2=1, imm=0),
+                EncodedInstruction(EBREAK),
+            ],
+        )
+    else:
+        program = _make_program(
+            runner,
+            [
+                EncodedInstruction(LW, rd=1, rs1=0, imm=1),
+                EncodedInstruction(EBREAK),
+            ],
+        )
 
     result = _run_program(runner, program)
 
-    assert result.timeout is False
-    assert result.success is True
+    if runner.config.cpu.name == "kronos":
+        assert result.timeout is True
+        assert result.bug_detected is True
+    else:
+        assert result.timeout is False
+        assert result.success is True
 
 
 def test_rtl_program_timeout_is_detected():

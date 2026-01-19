@@ -9,13 +9,14 @@ import subprocess
 import tempfile
 import shutil
 import re
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from ..config import FuzzerConfig
 from ..generator.ultimate import UltimateProgram
-from .elf_writer import ELFWriter, write_hex
+from .elf_writer import ELFWriter, write_hex, write_raw_binary
 
 
 @dataclass
@@ -91,7 +92,59 @@ class RTLRunner:
             self.elf_writer.write(program, elf_path)
 
             # Run simulation
-            result = self._run_simulation(hex_path, elf_path, tmpdir)
+            if self.config.cpu.name == "kronos":
+                result = self._run_kronos_simulation(program, tmpdir)
+            else:
+                result = self._run_simulation(hex_path, elf_path, tmpdir)
+
+        return result
+
+    def _run_kronos_simulation(self, program: UltimateProgram, work_dir: Path) -> RTLResult:
+        """Run Kronos compliance simulator with binary input."""
+        result = RTLResult()
+
+        sim_binary = self._get_sim_binary()
+        if sim_binary is None:
+            result.error_message = "RTL simulation binary not available"
+            return result
+
+        bin_path = work_dir / "program.bin"
+        sig_path = work_dir / "signature.output"
+        nm_path = work_dir / "program.nm"
+
+        write_raw_binary(program, bin_path)
+
+        tohost = program.data_start
+        sig_begin = program.data_start + 0x10
+        sig_end = program.data_start + 0x20
+        nm_path.write_text(
+            f"{tohost:08x} T tohost\n"
+            f"{sig_begin:08x} T begin_signature\n"
+            f"{sig_end:08x} T end_signature\n"
+        )
+
+        try:
+            proc = subprocess.run(
+                [str(sim_binary), str(bin_path), str(sig_path)],
+                capture_output=True,
+                text=True,
+                timeout=self.config.rtl_timeout / 1000.0,
+                cwd=str(work_dir)
+            )
+            result.raw_output = proc.stdout + proc.stderr
+            result.exit_code = proc.returncode
+            result.success = proc.returncode == 0
+            self._parse_output(result)
+            if "Simulation Failed" in result.raw_output:
+                result.success = False
+                result.timeout = True
+                result.bug_detected = True
+        except subprocess.TimeoutExpired:
+            result.timeout = True
+            result.bug_detected = True
+            result.error_message = "RTL simulation timed out - potential bug"
+        except Exception as e:
+            result.error_message = str(e)
 
         return result
 
@@ -155,6 +208,9 @@ class RTLRunner:
         # Look for pre-built binary
         possible_binaries = [
             self.rtl_model_path / "obj_dir" / "Vtestbench",
+            self.rtl_model_path / "obj_dir" / "Vkronos",
+            self.rtl_model_path / "obj_dir" / "Vpicorv32_wrapper",
+            self.rtl_model_path / "build" / "output" / "bin" / "kronos_compliance",
             self.rtl_model_path / "build" / "sim",
             self.rtl_model_path / "sim" / "testbench",
             self.rtl_model_path / "testbench_verilator",
@@ -165,6 +221,17 @@ class RTLRunner:
             if binary.exists():
                 self._sim_binary = binary.resolve()
                 return self._sim_binary
+
+        # Fallback: scan for verilated binaries in common dirs
+        for subdir in ["obj_dir", "build", "sim", "testbench_verilator_dir"]:
+            base = self.rtl_model_path / subdir
+            if not base.exists():
+                continue
+            for candidate in base.iterdir():
+                if candidate.is_file() and os.access(candidate, os.X_OK):
+                    if candidate.name.startswith("V") or candidate.name in {"sim", "testbench"}:
+                        self._sim_binary = candidate.resolve()
+                        return self._sim_binary
 
         return None
 
@@ -225,27 +292,51 @@ class RTLRunner:
         if self.rtl_model_path is None:
             return False, "RTL model path not configured"
 
+        if self.config.cpu.name == "kronos":
+            build_dir = self.rtl_model_path / "build"
+            build_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                result = subprocess.run(
+                    ["cmake", "-S", str(self.rtl_model_path), "-B", str(build_dir)],
+                    capture_output=True,
+                    text=True,
+                    timeout=300
+                )
+                if result.returncode != 0:
+                    return False, f"CMake configure failed: {result.stderr}"
+                result = subprocess.run(
+                    ["cmake", "--build", str(build_dir), "--target", "kronos_compliance"],
+                    capture_output=True,
+                    text=True,
+                    timeout=300
+                )
+                if result.returncode == 0:
+                    return True, "Build successful (target kronos_compliance)"
+                return False, f"Build failed: {result.stderr}"
+            except Exception as e:
+                return False, str(e)
+
         # Check for Makefile
         makefile = self.rtl_model_path / "Makefile"
         if not makefile.exists():
             return False, f"No Makefile found at {self.rtl_model_path}"
 
-        try:
-            result = subprocess.run(
-                ["make", "sim"],
-                cwd=str(self.rtl_model_path),
-                capture_output=True,
-                text=True,
-                timeout=300  # 5 minute timeout for build
-            )
+        targets = ["sim", "testbench_verilator", "verilator", "build"]
+        for target in targets:
+            try:
+                result = subprocess.run(
+                    ["make", target],
+                    cwd=str(self.rtl_model_path),
+                    capture_output=True,
+                    text=True,
+                    timeout=300  # 5 minute timeout for build
+                )
+                if result.returncode == 0:
+                    return True, f"Build successful (target {target})"
+            except Exception as e:
+                return False, str(e)
 
-            if result.returncode == 0:
-                return True, "Build successful"
-            else:
-                return False, f"Build failed: {result.stderr}"
-
-        except Exception as e:
-            return False, str(e)
+        return False, f"Build failed for targets: {', '.join(targets)}"
 
     def check_verilator_available(self) -> Tuple[bool, str]:
         """

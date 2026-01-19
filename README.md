@@ -32,7 +32,7 @@ source .venv/bin/activate
 # Install Cascade and dependencies
 pip install -e ".[dev]"
 
-# (Optional) Install external tools (Spike, Verilator, PicoRV32)
+# (Optional) Install external tools (Spike, Verilator, PicoRV32, Kronos)
 ./scripts/setup_deps.sh
 
 # (Optional) Build PicoRV32 RTL model (Verilator)
@@ -40,6 +40,12 @@ make -C deps/picorv32 testbench_verilator
 
 # Run with the RTL model
 cascade -n 10 --cpu picorv32 --rtl-path deps/picorv32
+
+# (Optional) Build Kronos RTL model (Verilator, uses CMake)
+./scripts/setup_deps.sh kronos
+
+# Run with the Kronos RTL model
+cascade -n 10 --cpu kronos --rtl-path deps/kronos
 ```
 
 ### macOS (Homebrew)
@@ -65,6 +71,12 @@ make -C deps/picorv32 testbench_verilator
 
 # Run with the RTL model
 cascade -n 10 --cpu picorv32 --rtl-path deps/picorv32
+
+# Build Kronos RTL model (Verilator, uses CMake)
+./scripts/setup_deps.sh kronos
+
+# Run with the Kronos RTL model
+cascade -n 10 --cpu kronos --rtl-path deps/kronos
 ```
 
 ### Build PicoRV32 RTL Model (Verilator)
@@ -75,6 +87,16 @@ make -C deps/picorv32 testbench_verilator
 
 # Run Cascade with the built RTL model
 cascade -n 10 --cpu picorv32 --rtl-path deps/picorv32
+```
+
+### Build Kronos RTL Model (Verilator)
+
+```bash
+# Build the Kronos Verilator model
+./scripts/setup_deps.sh kronos
+
+# Run Cascade with the built RTL model
+cascade -n 10 --cpu kronos --rtl-path deps/kronos
 ```
 
 ### Manual Installation
@@ -210,6 +232,7 @@ cascade/
 | CPU      | ISA Extensions | Notes |
 |----------|----------------|-------|
 | PicoRV32 | rv32im         | Simple, good for testing |
+| Kronos   | rv32i          | FPGA-focused design |
 | VexRiscv | rv32imfd       | SpinalHDL-based |
 | Rocket   | rv64imafd      | Reference implementation |
 | CVA6     | rv64imafd      | OpenHW Group |

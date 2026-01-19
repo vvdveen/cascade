@@ -214,7 +214,8 @@ class IntermediateProgramGenerator:
 
     def _generate_final_block(self, block_id: int) -> BasicBlock:
         """Generate the final completion block."""
-        alloc = self.memory.allocate_basic_block(1)
+        block_size = 3 if self.config.cpu.name == "kronos" else 1
+        alloc = self.memory.allocate_basic_block(block_size)
         block = self.block_gen.generate_final_block(alloc.start, block_id)
         return block
 

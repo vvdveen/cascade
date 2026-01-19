@@ -1,0 +1,21 @@
+diff --git a/cmake/AddHDLVerilator.cmake b/cmake/AddHDLVerilator.cmake
+index 72083b3..9a1b7ff 100644
+--- a/cmake/AddHDLVerilator.cmake
++++ b/cmake/AddHDLVerilator.cmake
+@@ -11,9 +11,10 @@ if (NOT VERILATOR_ENV_SETUP)
+   # Make common verilator shared lib
+-  add_library(verilated SHARED
++  add_library(verilated STATIC
+     ${VERILATOR_INCLUDES}/verilated.cpp
+     ${VERILATOR_INCLUDES}/verilated_vcd_c.cpp
++    ${VERILATOR_INCLUDES}/verilated_threads.cpp
+   )
+@@ -73,7 +74,7 @@ function(verilate_hdl)
+     COMMAND
+       ${VERILATOR_BIN}
+     ARGS
+-      -O3 -Wall -cc --trace -Mdir .
++      -O3 -Wall -Wno-fatal -cc --trace -Mdir .
+       --prefix ${ARG_NAME}
+       --top-module ${ARG_NAME}
+       ${includes}

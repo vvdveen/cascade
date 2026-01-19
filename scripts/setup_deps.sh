@@ -6,6 +6,7 @@
 # - Spike (RISC-V ISS)
 # - Verilator (RTL simulator)
 # - PicoRV32 (test target)
+# - Kronos (test target)
 #
 set -e
 
@@ -261,6 +262,116 @@ install_picorv32() {
     log_info "PicoRV32 installed to $BUILD_DIR/picorv32"
 }
 
+ensure_riscv32_toolchain() {
+    local toolchain_dir="$BUILD_DIR/toolchains/riscv32"
+    local bin_dir="$toolchain_dir/bin"
+    if [ -x "$bin_dir/riscv32-unknown-elf-gcc" ] && \
+       [ -x "$bin_dir/riscv32-unknown-elf-objdump" ] && \
+       [ -x "$bin_dir/riscv32-unknown-elf-objcopy" ]; then
+        echo "$toolchain_dir"
+        return 0
+    fi
+
+    mkdir -p "$bin_dir"
+
+    if command -v riscv32-unknown-elf-gcc &> /dev/null; then
+        ln -sf "$(command -v riscv32-unknown-elf-gcc)" "$bin_dir/riscv32-unknown-elf-gcc"
+        ln -sf "$(command -v riscv32-unknown-elf-objdump)" "$bin_dir/riscv32-unknown-elf-objdump"
+        ln -sf "$(command -v riscv32-unknown-elf-objcopy)" "$bin_dir/riscv32-unknown-elf-objcopy"
+        echo "$toolchain_dir"
+        return 0
+    fi
+
+    if command -v riscv64-unknown-elf-gcc &> /dev/null; then
+        ln -sf "$(command -v riscv64-unknown-elf-gcc)" "$bin_dir/riscv32-unknown-elf-gcc"
+        ln -sf "$(command -v riscv64-unknown-elf-objdump)" "$bin_dir/riscv32-unknown-elf-objdump"
+        ln -sf "$(command -v riscv64-unknown-elf-objcopy)" "$bin_dir/riscv32-unknown-elf-objcopy"
+        echo "$toolchain_dir"
+        return 0
+    fi
+
+    log_warn "RISC-V toolchain not found (riscv32-unknown-elf-* or riscv64-unknown-elf-*)."
+    echo ""
+    return 1
+}
+
+apply_kronos_patches() {
+    local kronos_dir="$1"
+    local patch_dir="$PROJECT_DIR/scripts/patches/kronos"
+    if [ ! -d "$patch_dir" ]; then
+        return 0
+    fi
+
+    for patch in "$patch_dir"/*.patch; do
+        [ -f "$patch" ] || continue
+        if git -C "$kronos_dir" apply --check "$patch" &> /dev/null; then
+            log_info "Applying Kronos patch: $(basename "$patch")"
+            git -C "$kronos_dir" apply "$patch"
+        else
+            log_info "Kronos patch already applied: $(basename "$patch")"
+        fi
+    done
+}
+
+try_make_targets() {
+    local dir="$1"
+    shift
+    local targets=("$@")
+    local target
+    for target in "${targets[@]}"; do
+        log_info "Attempting build target '$target' in $dir"
+        set +e
+        make -C "$dir" "$target" -j"$(get_num_cores)"
+        status=$?
+        set -e
+        if [ "$status" -eq 0 ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Install Kronos (test target)
+install_kronos() {
+    log_info "Installing Kronos..."
+
+    mkdir -p "$BUILD_DIR"
+    cd "$BUILD_DIR"
+
+    if [ -d "kronos" ]; then
+        log_info "Kronos source already exists"
+    else
+        log_info "Cloning Kronos..."
+        git clone https://github.com/SonalPinto/kronos.git
+        cd kronos
+        git checkout 13678d4 2>/dev/null || git checkout master
+    fi
+
+    apply_kronos_patches "$BUILD_DIR/kronos"
+
+    local riscv_tc
+    riscv_tc="$(ensure_riscv32_toolchain || true)"
+
+    mkdir -p "$BUILD_DIR/kronos/build"
+    log_info "Configuring Kronos with CMake..."
+    if [ -n "$riscv_tc" ]; then
+        RISCV_TOOLCHAIN_DIR="$riscv_tc" cmake -S "$BUILD_DIR/kronos" -B "$BUILD_DIR/kronos/build"
+    else
+        cmake -S "$BUILD_DIR/kronos" -B "$BUILD_DIR/kronos/build"
+    fi
+
+    log_info "Building Kronos compliance simulator..."
+    if [ -n "$riscv_tc" ]; then
+        RISCV_TOOLCHAIN_DIR="$riscv_tc" cmake --build "$BUILD_DIR/kronos/build" --target kronos_compliance -j"$(get_num_cores)" || \
+            log_warn "Kronos build failed; check CMake output in $BUILD_DIR/kronos/build"
+    else
+        cmake --build "$BUILD_DIR/kronos/build" --target kronos_compliance -j"$(get_num_cores)" || \
+            log_warn "Kronos build failed; check CMake output in $BUILD_DIR/kronos/build"
+    fi
+
+    log_info "Kronos installed to $BUILD_DIR/kronos"
+}
+
 # Install Python dependencies
 install_python_deps() {
     log_info "Installing Python dependencies..."
@@ -315,6 +426,35 @@ generation:
 EOF
 
     log_info "Configuration created at $PROJECT_DIR/configs/picorv32.yaml"
+
+    cat > "$PROJECT_DIR/configs/kronos.yaml" << EOF
+# Cascade configuration for Kronos
+cpu:
+  name: kronos
+  xlen: 32
+  extensions:
+    - I
+
+memory:
+  code_start: 0x00000000
+  code_size: 0x10000
+  data_start: 0x00010000
+  data_size: 0x10000
+
+execution:
+  iss_timeout: 10000
+  rtl_timeout: 100000
+  spike_path: ${INSTALL_PREFIX}/bin/spike
+  rtl_model_path: ${BUILD_DIR}/kronos
+
+generation:
+  min_basic_blocks: 10
+  max_basic_blocks: 100
+  min_block_instructions: 1
+  max_block_instructions: 20
+EOF
+
+    log_info "Configuration created at $PROJECT_DIR/configs/kronos.yaml"
 }
 
 # Print PATH instructions
@@ -339,6 +479,10 @@ print_path_instructions() {
     echo ""
     echo "  make -C $BUILD_DIR/picorv32 testbench_verilator"
     echo ""
+    echo "To build the Kronos Verilator model:"
+    echo ""
+    echo "  make -C $BUILD_DIR/kronos verilator"
+    echo ""
     echo "To run the fuzzer:"
     echo ""
     echo "  cd $PROJECT_DIR"
@@ -348,6 +492,7 @@ print_path_instructions() {
     echo "To use the RTL model:"
     echo ""
     echo "  cascade -n 10 --cpu picorv32 --rtl-path $BUILD_DIR/picorv32"
+    echo "  cascade -n 10 --cpu kronos --rtl-path $BUILD_DIR/kronos"
     echo ""
 }
 
@@ -380,11 +525,14 @@ main() {
         picorv32)
             install_picorv32
             ;;
+        kronos)
+            install_kronos
+            ;;
         python)
             install_python_deps
             ;;
         *)
-            echo "Usage: $0 [all|spike|verilator|picorv32|python]"
+            echo "Usage: $0 [all|spike|verilator|picorv32|kronos|python]"
             exit 1
             ;;
     esac

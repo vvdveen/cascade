@@ -38,6 +38,7 @@ Cascade is a RISC-V CPU fuzzer that generates valid programs with entangled data
 2. **Spike** (riscv-isa-sim) - RISC-V Instruction Set Simulator for pre-simulation
 3. **Verilator 5.x** - RTL simulation (converts Verilog to C++)
 4. **PicoRV32** - Simple RISC-V CPU for testing (optional)
+5. **Kronos** - rv32i CPU for FPGA-focused testing (optional)
 
 ---
 
@@ -141,11 +142,17 @@ make -C deps/picorv32 sim
 export CASCADE_RTL_PATH=deps/picorv32
 pytest tests/
 
+# Optional: Run RTL integration tests against Kronos
+./scripts/setup_deps.sh kronos
+CASCADE_RTL_PATH=deps/kronos CASCADE_RTL_CPU=kronos pytest tests/test_rtl_integration.py
+
 # 4. Test the fuzzer with mock runners
 cascade -n 10 --cpu picorv32
+cascade -n 10 --cpu kronos
 
 # 5. If you install Spike, test with real ISS
 cascade -n 10 --cpu picorv32 --spike-path /opt/homebrew/bin/spike
+cascade -n 10 --cpu kronos --spike-path /opt/homebrew/bin/spike
 ```
 
 ---

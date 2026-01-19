@@ -62,6 +62,18 @@ class MemoryLayout:
     context_size: int = 0x1000  # 4KB
 
 
+KRONOS_MEMORY_LAYOUT = MemoryLayout(
+    code_start=0x00000000,
+    code_size=0x1000,
+    data_start=0x00001000,
+    data_size=0x1000,
+    stack_top=0x00002000,
+    stack_size=0x800,
+    context_start=0x00001800,
+    context_size=0x800,
+)
+
+
 @dataclass
 class InstructionWeights:
     """Probability weights for instruction categories."""
@@ -182,6 +194,13 @@ PICORV32_CONFIG = CPUConfig(
     name="picorv32",
     xlen=32,
     extensions={Extension.I, Extension.M},
+    privilege_levels={PrivilegeLevel.MACHINE},
+)
+
+KRONOS_CONFIG = CPUConfig(
+    name="kronos",
+    xlen=32,
+    extensions={Extension.I},
     privilege_levels={PrivilegeLevel.MACHINE},
 )
 

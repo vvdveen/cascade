@@ -509,8 +509,14 @@ class BasicBlockGenerator:
         """
         block = BasicBlock(start_addr=start_addr, block_id=block_id)
 
-        # Terminate by triggering a trap so ISS/RTL can stop.
-        block.terminator = EncodedInstruction(EBREAK)
+        if self.config.cpu.name == "kronos":
+            # Write to tohost (data_start) for kronos_compliance completion.
+            block.instructions.append(EncodedInstruction(ADDI, rd=1, rs1=0, imm=1))
+            block.instructions.append(EncodedInstruction(SW, rs1=self.data_base_reg, rs2=1, imm=0))
+            block.terminator = EncodedInstruction(EBREAK)
+        else:
+            # Terminate by triggering a trap so ISS/RTL can stop.
+            block.terminator = EncodedInstruction(EBREAK)
 
         return block
 
