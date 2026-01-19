@@ -26,6 +26,9 @@ from .config import (
     VEXRISCV_CONFIG, ROCKET_CONFIG
 )
 from .generator.intermediate import IntermediateProgram, IntermediateProgramGenerator
+from .generator.basic_block import BasicBlock
+from .isa.encoding import EncodedInstruction
+from .isa.instructions import ADDI, EBREAK, LUI, SW
 from .generator.ultimate import UltimateProgram, UltimateProgramGenerator
 from .execution.iss_runner import ISSRunner, MockISSRunner
 from .execution.rtl_runner import RTLRunner, MockRTLRunner
@@ -153,8 +156,8 @@ class Fuzzer:
         """
         logger.info(f"Calibrating for {self.config.cpu.name}")
 
-        # Generate a simple test program
-        test_program = self.intermediate_gen.generate(seed=0)
+        # Use a deterministic, safe program to avoid ISS timeouts.
+        test_program = self._build_calibration_program()
 
         # Run on ISS to verify setup
         result = self.iss_runner.run(test_program, collect_feedback=False)
@@ -166,6 +169,36 @@ class Fuzzer:
 
         logger.info("Calibration successful")
         return True
+
+    def _build_calibration_program(self) -> IntermediateProgram:
+        """Build a minimal program that should terminate on the ISS."""
+        code_start = self.config.memory.code_start
+        data_start = self.config.memory.data_start
+        block = BasicBlock(start_addr=code_start, block_id=0)
+
+        # Minimal setup so the program executes a real instruction before exiting.
+        block.instructions.append(EncodedInstruction(ADDI, rd=1, rs1=0, imm=0))
+
+        if self.config.cpu.name == "kronos":
+            # Write to tohost for kronos compliance semantics.
+            upper = (data_start + 0x800) >> 12
+            lower = data_start - (upper << 12)
+            block.instructions.append(EncodedInstruction(LUI, rd=2, imm=(upper & 0xFFFFF) << 12))
+            block.instructions.append(EncodedInstruction(ADDI, rd=2, rs1=2, imm=lower & 0xFFF))
+            block.instructions.append(EncodedInstruction(ADDI, rd=1, rs1=0, imm=1))
+            block.instructions.append(EncodedInstruction(SW, rs1=2, rs2=1, imm=0))
+
+        block.terminator = EncodedInstruction(EBREAK)
+
+        program = IntermediateProgram(
+            blocks=[block],
+            entry_addr=code_start,
+            code_start=code_start,
+            code_end=block.end_addr,
+            data_start=data_start,
+            data_end=data_start + self.config.memory.data_size,
+        )
+        return program
 
     def fuzz(self, num_programs: Optional[int] = None) -> List[BugReport]:
         """

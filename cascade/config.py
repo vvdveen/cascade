@@ -63,14 +63,14 @@ class MemoryLayout:
 
 
 KRONOS_MEMORY_LAYOUT = MemoryLayout(
-    code_start=0x00000000,
-    code_size=0x1000,
-    data_start=0x00001000,
-    data_size=0x1000,
-    stack_top=0x00002000,
-    stack_size=0x800,
-    context_start=0x00001800,
-    context_size=0x800,
+    code_start=0x80000000,
+    code_size=0x4000,
+    data_start=0x80004000,
+    data_size=0x2000,
+    stack_top=0x80008000,
+    stack_size=0x2000,
+    context_start=0x8000A000,
+    context_size=0x1000,
 )
 
 

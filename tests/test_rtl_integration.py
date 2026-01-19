@@ -58,6 +58,15 @@ def _make_program(runner: RTLRunner, instructions: list[EncodedInstruction]) -> 
     )
 
 
+def _load_addr(reg: int, addr: int) -> list[EncodedInstruction]:
+    upper = (addr + 0x800) >> 12
+    lower = addr - (upper << 12)
+    return [
+        EncodedInstruction(LUI, rd=reg, imm=(upper & 0xFFFFF) << 12),
+        EncodedInstruction(ADDI, rd=reg, rs1=reg, imm=lower & 0xFFF),
+    ]
+
+
 def _run_program(runner: RTLRunner, program: UltimateProgram, extra_args: list[str] | None = None):
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
@@ -73,11 +82,11 @@ def _run_program(runner: RTLRunner, program: UltimateProgram, extra_args: list[s
 def test_rtl_program_completes_without_timeout():
     runner = _get_rtl_runner()
     if runner.config.cpu.name == "kronos":
+        data_start = runner.config.memory.data_start
         program = _make_program(
             runner,
             [
-                EncodedInstruction(LUI, rd=2, imm=0x00001000),
-                EncodedInstruction(ADDI, rd=2, rs1=2, imm=0),
+                *_load_addr(2, data_start),
                 EncodedInstruction(ADDI, rd=1, rs1=0, imm=1),
                 EncodedInstruction(SW, rs1=2, rs2=1, imm=0),
                 EncodedInstruction(EBREAK),
@@ -102,12 +111,12 @@ def test_rtl_program_completes_without_timeout():
 def test_rtl_program_exception_traps():
     runner = _get_rtl_runner()
     if runner.config.cpu.name == "kronos":
+        data_start = runner.config.memory.data_start
         program = _make_program(
             runner,
             [
                 EncodedInstruction(LW, rd=1, rs1=0, imm=1),
-                EncodedInstruction(LUI, rd=2, imm=0x00001000),
-                EncodedInstruction(ADDI, rd=2, rs1=2, imm=0),
+                *_load_addr(2, data_start),
                 EncodedInstruction(ADDI, rd=1, rs1=0, imm=1),
                 EncodedInstruction(SW, rs1=2, rs2=1, imm=0),
                 EncodedInstruction(EBREAK),

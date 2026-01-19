@@ -7,8 +7,10 @@ Interfaces with Spike (riscv-isa-sim) to:
 3. Return structured feedback for ultimate program construction
 """
 
+import os
+import pty
+import select
 import subprocess
-import selectors
 import time
 import tempfile
 import re
@@ -81,12 +83,15 @@ class ISSRunner:
             self.elf_writer.write(program, elf_path)
 
             # Build Spike command
-            cmd = self._build_command(elf_path, collect_feedback)
+            trace = collect_feedback
+            if self.config.cpu.name == "kronos" and not collect_feedback:
+                trace = True
+            cmd = self._build_command(elf_path, trace)
 
             try:
-                if collect_feedback:
+                if collect_feedback or (self.config.cpu.name == "kronos" and not collect_feedback):
                     self._run_spike_with_early_exit(cmd, result)
-                    if result.success:
+                    if result.success and collect_feedback:
                         result.feedback = self._parse_feedback(result.raw_output, program)
                 else:
                     proc = subprocess.run(
@@ -191,19 +196,14 @@ class ISSRunner:
     def _run_spike_with_early_exit(self, cmd: List[str], result: ISSResult) -> None:
         """Run Spike and stop once termination is observed in the log."""
         timeout_seconds = self.config.iss_timeout / 1000.0
+        master_fd, slave_fd = pty.openpty()
         proc = subprocess.Popen(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1
+            stdin=subprocess.DEVNULL,
+            stdout=slave_fd,
+            stderr=slave_fd,
         )
-
-        selector = selectors.DefaultSelector()
-        if proc.stdout:
-            selector.register(proc.stdout, selectors.EVENT_READ)
-        if proc.stderr:
-            selector.register(proc.stderr, selectors.EVENT_READ)
+        os.close(slave_fd)
 
         output_chunks: List[str] = []
         deadline = time.time() + timeout_seconds
@@ -217,28 +217,34 @@ class ISSRunner:
                 result.error_message = "ISS simulation timed out"
                 break
 
-            for key, _ in selector.select(timeout=0.1):
-                line = key.fileobj.readline()
-                if not line:
-                    continue
-                output_chunks.append(line)
-                if self._is_expected_termination(line):
-                    saw_termination = True
-                    proc.terminate()
-                    break
+            rlist, _, _ = select.select([master_fd], [], [], 0.1)
+            if master_fd in rlist:
+                data = os.read(master_fd, 4096)
+                if data:
+                    text = data.decode(errors="replace")
+                    output_chunks.append(text)
+                    if self._is_expected_termination(text):
+                        saw_termination = True
+                        proc.terminate()
+                        break
             if saw_termination:
                 break
 
         try:
-            remaining_out, remaining_err = proc.communicate(timeout=1)
+            proc.wait(timeout=1)
         except subprocess.TimeoutExpired:
             proc.kill()
-            remaining_out, remaining_err = proc.communicate()
+            proc.wait(timeout=1)
 
-        if remaining_out:
-            output_chunks.append(remaining_out)
-        if remaining_err:
-            output_chunks.append(remaining_err)
+        try:
+            while True:
+                data = os.read(master_fd, 4096)
+                if not data:
+                    break
+                output_chunks.append(data.decode(errors="replace"))
+        except OSError:
+            pass
+        os.close(master_fd)
 
         result.raw_output = "".join(output_chunks)
         result.exit_code = proc.returncode or 0
