@@ -734,6 +734,7 @@ class Fuzzer:
             # only need header
 
         priority = [
+            ("retire_pc", "pc"),
             ("rvfi_pc_wdata", "pc"),
             ("reg_pc", "pc"),
             ("instr_addr", "pc"),

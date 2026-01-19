@@ -1,0 +1,124 @@
+diff --git a/riscv-compliance/kronos_compliance_vsim.sv b/riscv-compliance/kronos_compliance_vsim.sv
+index 7352b4c..957dce5 100644
+--- a/riscv-compliance/kronos_compliance_vsim.sv
++++ b/riscv-compliance/kronos_compliance_vsim.sv
+@@ -26,6 +26,8 @@ logic [3:0] data_mask;
+ logic data_wr_en;
+ logic data_req;
+ logic data_ack;
++logic retire_vld;
++logic [31:0] retire_pc;
+ 
+ kronos_core #(
+   .FAST_BRANCH(1)
+@@ -45,7 +47,9 @@ kronos_core #(
+   .data_ack          (data_ack    ),
+   .software_interrupt(1'b0        ),
+   .timer_interrupt   (1'b0        ),
+-  .external_interrupt(1'b0        )
++  .external_interrupt(1'b0        ),
++  .retire_vld        (retire_vld  ),
++  .retire_pc         (retire_pc   )
+ );
+ 
+ logic [31:0] mem_addr;
+diff --git a/rtl/core/kronos_EX.sv b/rtl/core/kronos_EX.sv
+index 64dc347..7ad6e9e 100644
+--- a/rtl/core/kronos_EX.sv
++++ b/rtl/core/kronos_EX.sv
+@@ -37,6 +37,10 @@ module kronos_EX
+   input  logic        software_interrupt,
+   input  logic        timer_interrupt,
+   input  logic        external_interrupt
++  ,
++  // Retire trace
++  output logic        retire_vld,
++  output logic [31:0] retire_pc
+ );
+ 
+ logic [31:0] result;
+@@ -279,4 +283,14 @@ always_ff @(posedge clk or negedge rstz) begin
+               || (decode.system && trap_jump);
+ end
+ 
++always_ff @(posedge clk or negedge rstz) begin
++  if (~rstz) begin
++    retire_vld <= 1'b0;
++    retire_pc <= BOOT_ADDR;
++  end else begin
++    retire_vld <= instret;
++    if (instret) retire_pc <= decode.pc;
++  end
++end
++
+ endmodule
+diff --git a/rtl/core/kronos_core.sv b/rtl/core/kronos_core.sv
+index 7e29d10..4a67f38 100644
+--- a/rtl/core/kronos_core.sv
++++ b/rtl/core/kronos_core.sv
+@@ -35,7 +35,10 @@ module kronos_core
+   // Interrupt sources
+   input  logic        software_interrupt,
+   input  logic        timer_interrupt,
+-  input  logic        external_interrupt
++  input  logic        external_interrupt,
++  // Retire trace
++  output logic        retire_vld,
++  output logic [31:0] retire_pc
+ );
+@@ -141,7 +144,9 @@ kronos_EX #(
+   .data_ack          (data_ack          ),
+   .software_interrupt(software_interrupt),
+   .timer_interrupt   (timer_interrupt   ),
+-  .external_interrupt(external_interrupt)
++  .external_interrupt(external_interrupt),
++  .retire_vld         (retire_vld         ),
++  .retire_pc          (retire_pc          )
+ );
+ 
+ // Flush pipeline on branch
+diff --git a/rtl/platform/krz/krz_top.sv b/rtl/platform/krz/krz_top.sv
+index 84448d3..9e2c09f 100644
+--- a/rtl/platform/krz/krz_top.sv
++++ b/rtl/platform/krz/krz_top.sv
+@@ -179,7 +179,9 @@ kronos_core #(
+   .data_ack          (data_ack    ),
+   .software_interrupt(1'b0        ),
+   .timer_interrupt   (1'b0        ),
+-  .external_interrupt(1'b0        )
++  .external_interrupt(1'b0        ),
++  .retire_vld         (           ),
++  .retire_pc          (           )
+ );
+ 
+ // ============================================================
+diff --git a/rtl/platform/krz/krzboy.sv b/rtl/platform/krz/krzboy.sv
+index 8fbe86e..d4da36c 100644
+--- a/rtl/platform/krz/krzboy.sv
++++ b/rtl/platform/krz/krzboy.sv
+@@ -213,7 +213,9 @@ kronos_core #(
+   .data_ack          (data_ack    ),
+   .software_interrupt(1'b0        ),
+   .timer_interrupt   (1'b0        ),
+-  .external_interrupt(1'b0        )
++  .external_interrupt(1'b0        ),
++  .retire_vld         (           ),
++  .retire_pc          (           )
+ );
+ 
+ // ============================================================
+diff --git a/rtl/platform/snowflake/snowflake_top.sv b/rtl/platform/snowflake/snowflake_top.sv
+index cb68ad4..80c862f 100644
+--- a/rtl/platform/snowflake/snowflake_top.sv
++++ b/rtl/platform/snowflake/snowflake_top.sv
+@@ -106,7 +106,9 @@ kronos_core #(
+   .data_ack          (data_ack    ),
+   .software_interrupt(1'b0        ),
+   .timer_interrupt   (1'b0        ),
+-  .external_interrupt(1'b0        )
++  .external_interrupt(1'b0        ),
++  .retire_vld         (           ),
++  .retire_pc          (           )
+ );
+ 
+ snowflake_system_bus u_sysbus (
