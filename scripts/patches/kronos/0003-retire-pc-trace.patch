@@ -6,8 +6,8 @@ index 7352b4c..957dce5 100644
  logic data_wr_en;
  logic data_req;
  logic data_ack;
-+logic retire_vld;
-+logic [31:0] retire_pc;
++(* keep *) logic retire_vld;
++(* keep *) logic [31:0] retire_pc;
  
  kronos_core #(
    .FAST_BRANCH(1)
