@@ -864,11 +864,15 @@ class Fuzzer:
                 shutil.copyfile(vcd_path, output_dir.parent / "ultimate.vcd")
             except Exception as e:
                 logger.error(f"Failed to save VCD trace: {e}")
+        try:
+            (output_dir.parent / "rtl_trace_source.txt").write_text(f"source_signal={source}\n")
+        except Exception as e:
+            logger.error(f"Failed to save RTL trace source: {e}")
         disasm = self._disassemble_elf(elf_path) if elf_path else {}
         trace_path = output_dir / "rtl_trace_pc.txt"
         with trace_path.open("w") as trace_file:
             trace_file.write("# RTL PC trace\n")
-            trace_file.write(f"# source={source}\n")
+            trace_file.write(f"# source_signal={source}\n")
             trace_file.write(f"# success={result.success} timeout={result.timeout}\n")
             if not pcs:
                 trace_file.write("# no pcs captured\n")
