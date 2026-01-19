@@ -271,8 +271,8 @@ class RTLRunner:
         """Run RTL simulation with trace/vcd enabled and store artifacts."""
         output_dir.mkdir(parents=True, exist_ok=True)
         if self.config.cpu.name == "kronos":
-            bin_path = output_dir / "program.bin"
-            sig_path = output_dir / "signature.output"
+            bin_path = (output_dir / "program.bin").resolve()
+            sig_path = (output_dir / "signature.output").resolve()
             nm_path = output_dir / "program.nm"
             write_raw_binary(program, bin_path)
             tohost = program.data_start
@@ -358,6 +358,8 @@ class RTLRunner:
         if not match:
             return
         vcd_path = Path(match.group(1).strip())
+        if not vcd_path.is_absolute():
+            vcd_path = output_dir / vcd_path
         if not vcd_path.exists():
             return
         try:
