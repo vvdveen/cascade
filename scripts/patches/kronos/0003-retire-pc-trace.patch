@@ -6,8 +6,9 @@ index 7352b4c..957dce5 100644
  logic data_wr_en;
  logic data_req;
  logic data_ack;
-+(* keep *) logic retire_vld;
-+(* keep *) logic [31:0] retire_pc;
++/* verilator keep */ logic retire_vld;
++/* verilator keep */ logic [31:0] retire_pc;
++/* verilator keep */ logic retire_keep;
  
  kronos_core #(
    .FAST_BRANCH(1)
@@ -20,6 +21,8 @@ index 7352b4c..957dce5 100644
 +  .retire_vld        (retire_vld  ),
 +  .retire_pc         (retire_pc   )
  );
++
++assign retire_keep = retire_vld ^ ^retire_pc;
  
  logic [31:0] mem_addr;
 diff --git a/rtl/core/kronos_EX.sv b/rtl/core/kronos_EX.sv
@@ -37,8 +40,24 @@ index 64dc347..7ad6e9e 100644
  );
  
  logic [31:0] result;
-@@ -279,4 +283,14 @@ always_ff @(posedge clk or negedge rstz) begin
-               || (decode.system && trap_jump);
+@@ -60,6 +60,7 @@ logic csr_vld,csr_rdy;
+ logic [31:0] csr_data;
+ logic regwr_csr;
+ logic instret;
++logic retire_event;
+ logic core_interrupt;
+ logic [3:0] core_interrupt_cause;
+@@ -275,8 +279,22 @@ assign return_trap = state == RETURN;
+ 
+ // instruction retired event
++assign retire_event = (decode_vld && decode_rdy)
++                   || (decode.system && trap_jump);
++
+ always_ff @(posedge clk or negedge rstz) begin
+   if (~rstz) instret <= 1'b0;
+-  else instret <= (decode_vld && decode_rdy)
+-              || (decode.system && trap_jump);
++  else instret <= retire_event;
  end
  
 +always_ff @(posedge clk or negedge rstz) begin
@@ -46,8 +65,8 @@ index 64dc347..7ad6e9e 100644
 +    retire_vld <= 1'b0;
 +    retire_pc <= BOOT_ADDR;
 +  end else begin
-+    retire_vld <= instret;
-+    if (instret) retire_pc <= decode.pc;
++    retire_vld <= retire_event;
++    if (retire_event) retire_pc <= decode.pc;
 +  end
 +end
 +

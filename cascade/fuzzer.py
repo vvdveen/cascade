@@ -627,10 +627,20 @@ class Fuzzer:
     def _append_trace_summary(self, bug_dir: Path, trace_dir: Path) -> None:
         """Append PC trace summary from VCD to metadata."""
         vcd_path = trace_dir / "testbench.vcd"
+        if self.config.cpu.name == "kronos":
+            vcd_path = trace_dir / "program.vcd"
+        if not vcd_path.exists():
+            vcd_candidates = sorted(trace_dir.glob("*.vcd"))
+            if vcd_candidates:
+                vcd_path = vcd_candidates[0]
         pcs = []
         source = "unknown"
         if vcd_path.exists():
-            pcs, source = self._extract_pc_trace(vcd_path, max_entries=None)
+            if self.config.cpu.name == "kronos":
+                pcs = self._extract_kronos_retire_trace(vcd_path, max_entries=None)
+                source = "retire_pc"
+            else:
+                pcs, source = self._extract_pc_trace(vcd_path, max_entries=None)
         if not pcs:
             trace_path = trace_dir / "testbench.trace"
             if trace_path.exists():
@@ -734,7 +744,6 @@ class Fuzzer:
             # only need header
 
         priority = [
-            ("retire_pc", "pc"),
             ("rvfi_pc_wdata", "pc"),
             ("reg_pc", "pc"),
             ("instr_addr", "pc"),
@@ -759,6 +768,81 @@ class Fuzzer:
                 return pcs, name
 
         return [], source
+
+    def _extract_kronos_retire_trace(self, vcd_path: Path,
+                                     max_entries: Optional[int] = 64) -> List[int]:
+        """Extract retire PC samples from Kronos VCD using retire_vld/retire_pc."""
+        retire_vld_id = None
+        retire_pc_id = None
+        in_header = True
+        with vcd_path.open("r", errors="replace") as vcd_file:
+            for line in vcd_file:
+                if in_header:
+                    stripped = line.lstrip()
+                    if stripped.startswith("$var"):
+                        parts = stripped.split()
+                        if len(parts) >= 5:
+                            ident = parts[3]
+                            name = parts[4]
+                            if name.endswith("retire_vld"):
+                                retire_vld_id = ident
+                            elif name.endswith("retire_pc"):
+                                retire_pc_id = ident
+                    elif stripped.startswith("$enddefinitions"):
+                        in_header = False
+                        break
+        if not retire_vld_id or not retire_pc_id:
+            raise RuntimeError("Missing retire_vld/retire_pc in Kronos VCD")
+
+        pcs: List[int] = []
+        vld = 0
+        pc_val: Optional[int] = None
+        with vcd_path.open("r", errors="replace") as vcd_file:
+            header_done = False
+            for line in vcd_file:
+                if not header_done:
+                    if line.lstrip().startswith("$enddefinitions"):
+                        header_done = True
+                    continue
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith("b"):
+                    parts = line[1:].split()
+                    if len(parts) != 2:
+                        continue
+                    bits, ident = parts
+                    if ident != retire_pc_id:
+                        continue
+                    if any(ch in "xXzZ" for ch in bits):
+                        continue
+                    pc_val = int(bits, 2) & 0xFFFFFFFF
+                    if vld == 1:
+                        pcs.append(pc_val)
+                elif line.startswith("h"):
+                    parts = line[1:].split()
+                    if len(parts) != 2:
+                        continue
+                    value, ident = parts
+                    if ident != retire_pc_id:
+                        continue
+                    if any(ch in "xXzZ" for ch in value):
+                        continue
+                    pc_val = int(value, 16) & 0xFFFFFFFF
+                    if vld == 1:
+                        pcs.append(pc_val)
+                elif line[0] in "01" and len(line) > 1:
+                    ident = line[1:]
+                    if ident != retire_vld_id:
+                        continue
+                    vld = int(line[0], 2)
+                    if vld == 1 and pc_val is not None:
+                        pcs.append(pc_val)
+                if max_entries is not None and len(pcs) > max_entries:
+                    pcs = pcs[-max_entries:]
+        if not pcs:
+            raise RuntimeError("No retire PCs captured from Kronos VCD")
+        return pcs
 
     def _vcd_signal_seen_high(self, vcd_path: Path, signal_name: str) -> bool:
         """Check if a single-bit signal ever goes high in VCD."""
@@ -859,7 +943,11 @@ class Fuzzer:
         pcs = []
         source = "missing"
         if vcd_path.exists():
-            pcs, source = self._extract_pc_trace(vcd_path, max_entries=None)
+            if self.config.cpu.name == "kronos":
+                pcs = self._extract_kronos_retire_trace(vcd_path, max_entries=None)
+                source = "retire_pc"
+            else:
+                pcs, source = self._extract_pc_trace(vcd_path, max_entries=None)
             try:
                 shutil.copyfile(vcd_path, output_dir.parent / "ultimate.vcd")
             except Exception as e:

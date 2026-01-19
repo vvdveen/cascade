@@ -124,6 +124,23 @@ def _make_intermediate(seed: int, runner: RTLRunner) -> IntermediateProgram:
     )
 
 
+def _vcd_has_signals(vcd_path: Path, signal_names: list[str]) -> bool:
+    wanted = {name: False for name in signal_names}
+    with vcd_path.open("r", errors="replace") as vcd_file:
+        for line in vcd_file:
+            stripped = line.lstrip()
+            if stripped.startswith("$var"):
+                parts = stripped.split()
+                if len(parts) >= 5:
+                    name = parts[4]
+                    for sig in wanted:
+                        if name.endswith(sig):
+                            wanted[sig] = True
+            elif stripped.startswith("$enddefinitions"):
+                break
+    return all(wanted.values())
+
+
 def _load_addr(reg: int, addr: int) -> list[EncodedInstruction]:
     upper = (addr + 0x800) >> 12
     lower = addr - (upper << 12)
@@ -280,7 +297,9 @@ def test_kronos_trace_writes_vcd():
     with tempfile.TemporaryDirectory() as tmpdir:
         trace_dir = Path(tmpdir) / "rtl_trace"
         runner.capture_trace(program, trace_dir)
-        assert any(trace_dir.glob("*.vcd"))
+        vcds = list(trace_dir.glob("*.vcd"))
+        assert vcds
+        assert _vcd_has_signals(vcds[0], ["retire_vld", "retire_pc"])
 
 
 def _resolve_spike_path() -> Path:
