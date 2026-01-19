@@ -756,11 +756,12 @@ class Fuzzer:
         if isinstance(self.iss_runner, MockISSRunner):
             return []
         success, pcs, _ = self.iss_runner.run_trace(program)
-        if not pcs:
-            return []
         with open(output_path, "w") as trace_file:
             trace_file.write("# ISS PC trace\n")
             trace_file.write(f"# success={success}\n")
+            if not pcs:
+                trace_file.write("# no pcs captured\n")
+                return []
             for pc in pcs:
                 trace_file.write(f"0x{pc:08x}\n")
         return pcs
@@ -778,6 +779,9 @@ class Fuzzer:
             trace_file.write("# RTL PC trace\n")
             trace_file.write(f"# source={source}\n")
             trace_file.write(f"# success={result.success} timeout={result.timeout}\n")
+            if not pcs:
+                trace_file.write("# no pcs captured\n")
+                return []
             for pc in pcs:
                 trace_file.write(f"0x{pc:08x}\n")
         return pcs
