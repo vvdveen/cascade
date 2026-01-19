@@ -391,7 +391,9 @@ class Fuzzer:
                 trace_dir = bug_dir / "rtl_trace"
                 rtl_pcs = self._write_rtl_trace(trace_dir, ultimate)
                 iss_pcs = self._write_iss_trace(bug_dir / "iss_trace_ultimate.txt", ultimate)
+                self._write_iss_trace(bug_dir / "iss_trace_intermediate.txt", intermediate)
                 self._write_trace_comparison(bug_dir / "pc_trace_compare.txt", iss_pcs, rtl_pcs)
+                self._copy_rtl_trace_summary(trace_dir, bug_dir / "rtl_trace_pc.txt")
                 if rtl_result.timeout:
                     self._append_trace_summary(bug_dir, trace_dir)
             except Exception as e:
@@ -413,9 +415,12 @@ class Fuzzer:
         if rtl_result.success and not rtl_result.bug_detected:
             try:
                 good_dir = self._report_good_run(iteration, intermediate, ultimate, rtl_result)
-                rtl_pcs = self._write_rtl_trace(good_dir / "rtl_trace", ultimate)
+                trace_dir = good_dir / "rtl_trace"
+                rtl_pcs = self._write_rtl_trace(trace_dir, ultimate)
                 iss_pcs = self._write_iss_trace(good_dir / "iss_trace_ultimate.txt", ultimate)
+                self._write_iss_trace(good_dir / "iss_trace_intermediate.txt", intermediate)
                 self._write_trace_comparison(good_dir / "pc_trace_compare.txt", iss_pcs, rtl_pcs)
+                self._copy_rtl_trace_summary(trace_dir, good_dir / "rtl_trace_pc.txt")
             except Exception as e:
                 logger.error(f"Failed to save good run at iteration {iteration}: {e}")
         elif not rtl_result.success and not rtl_result.bug_detected:
@@ -809,6 +814,13 @@ class Fuzzer:
             out.write(f"Divergence index: {divergence_idx}\n")
             out.write(f"ISS PC: 0x{iss_pcs[divergence_idx]:08x}\n")
             out.write(f"RTL PC: 0x{rtl_pcs[divergence_idx]:08x}\n")
+
+    def _copy_rtl_trace_summary(self, trace_dir: Path, output_path: Path) -> None:
+        """Copy the RTL PC trace summary to a stable location."""
+        src = trace_dir / "rtl_trace_pc.txt"
+        if not src.exists():
+            return
+        output_path.write_text(src.read_text())
 
     def _write_rerun_script(self, script_path: Path, seed: int) -> None:
         """Write a helper script to re-run the RTL simulator for a bug."""
