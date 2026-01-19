@@ -107,7 +107,7 @@ def test_intermediate_iss_timeout_creates_error_report(tmp_path):
 
     fuzzer._fuzz_iteration(0)
 
-    error_dirs = list((tmp_path / "errors").glob("iss_timeout_intermediate_*"))
+    error_dirs = list((tmp_path / "test" / "errors").glob("iss_timeout_intermediate_*"))
     assert len(error_dirs) == 1
     error_dir = error_dirs[0]
     assert (error_dir / "metadata.txt").exists()
@@ -139,7 +139,7 @@ def test_ultimate_iss_timeout_creates_error_report_and_skips_rtl(tmp_path):
 
     fuzzer._fuzz_iteration(0)
 
-    error_dirs = list((tmp_path / "errors").glob("iss_timeout_ultimate_*"))
+    error_dirs = list((tmp_path / "test" / "errors").glob("iss_timeout_ultimate_*"))
     assert len(error_dirs) == 1
     error_dir = error_dirs[0]
     assert (error_dir / "metadata.txt").exists()

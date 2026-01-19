@@ -425,7 +425,8 @@ class Fuzzer:
         bug_id = f"bug_{timestamp.strftime('%Y%m%d_%H%M%S')}_{iteration}"
 
         # Create bug directory
-        bug_dir = self.output_dir / "bugs" / bug_id
+        cpu_dir = self.output_dir / self.config.cpu.name
+        bug_dir = cpu_dir / "bugs" / bug_id
         bug_dir.mkdir(parents=True, exist_ok=True)
 
         # Save programs
@@ -493,10 +494,11 @@ class Fuzzer:
                             ultimate: UltimateProgram,
                             iss_result,
                             label: str = "ultimate") -> None:
-        """Save ISS timeout artifacts in output/errors."""
+        """Save ISS timeout artifacts in output/<cpu>/errors."""
         timestamp = datetime.now()
         report_id = f"iss_timeout_{label}_{timestamp.strftime('%Y%m%d_%H%M%S')}_{iteration}"
-        error_dir = self.output_dir / "errors" / report_id
+        cpu_dir = self.output_dir / self.config.cpu.name
+        error_dir = cpu_dir / "errors" / report_id
         error_dir.mkdir(parents=True, exist_ok=True)
 
         ultimate_path = error_dir / "ultimate.elf"
@@ -526,7 +528,8 @@ class Fuzzer:
         """Save metadata for successful RTL runs in output/good."""
         timestamp = datetime.now()
         run_id = f"good_{timestamp.strftime('%Y%m%d_%H%M%S')}_{iteration}"
-        good_dir = self.output_dir / "good" / run_id
+        cpu_dir = self.output_dir / self.config.cpu.name
+        good_dir = cpu_dir / "good" / run_id
         good_dir.mkdir(parents=True, exist_ok=True)
 
         meta_path = good_dir / "metadata.txt"
