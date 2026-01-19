@@ -428,12 +428,16 @@ class Fuzzer:
         intermediate_path = bug_dir / "intermediate.elf"
         ultimate_asm_path = bug_dir / "ultimate.S"
         rerun_script_path = bug_dir / "rerun_rtl.sh"
+        iss_intermediate_script_path = bug_dir / "rerun_iss_intermediate.sh"
+        iss_ultimate_script_path = bug_dir / "rerun_iss_ultimate.sh"
 
         self.elf_writer.write(ultimate, ultimate_path)
         self.elf_writer.write(intermediate, intermediate_path)
         with open(ultimate_asm_path, "w") as asm_file:
             asm_file.write(self._format_program_asm(ultimate))
         self._write_rerun_script(rerun_script_path, intermediate.descriptor.seed if intermediate.descriptor else 0)
+        self._write_rerun_iss_script(iss_intermediate_script_path, intermediate_path)
+        self._write_rerun_iss_script(iss_ultimate_script_path, ultimate_path)
         self._write_iss_trace(bug_dir / "iss_trace_ultimate.txt", ultimate)
 
         # Save metadata
@@ -721,16 +725,17 @@ class Fuzzer:
         script_path.write_text(script)
         script_path.chmod(0o755)
 
-    def _write_rerun_iss_script(self, script_path: Path, ultimate_path: Path) -> None:
-        """Write a helper script to re-run ISS on an ultimate program."""
+    def _write_rerun_iss_script(self, script_path: Path, program_path: Path) -> None:
+        """Write a helper script to re-run ISS on a program."""
         spike_path = self.config.spike_path
+        mem_start = self.config.memory.code_start
         script = (
             "#!/usr/bin/env bash\n"
             "set -euo pipefail\n"
             "\n"
             f'export PATH="{spike_path.parent}:$PATH"\n'
             f'"{spike_path}" --isa {self.iss_runner.isa_string} '
-            f'-m0x80000000:0x100000 -l --log-commits "{ultimate_path}"\n'
+            f'-m{mem_start:#x}:0x100000 -l --log-commits "{program_path}"\n'
         )
         script_path.write_text(script)
         script_path.chmod(0o755)
