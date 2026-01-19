@@ -388,16 +388,24 @@ class Fuzzer:
                 iteration, intermediate, ultimate, rtl_result
             )
             try:
-                trace_dir = bug_dir / "rtl_trace"
-                rtl_pcs = self._write_rtl_trace(trace_dir, ultimate)
                 iss_pcs = self._write_iss_trace(bug_dir / "iss_trace_ultimate.txt", ultimate)
                 self._write_iss_trace(bug_dir / "iss_trace_intermediate.txt", intermediate)
-                self._write_trace_comparison(bug_dir / "pc_trace_compare.txt", iss_pcs, rtl_pcs)
+            except Exception as e:
+                logger.error(f"Failed to capture ISS trace at iteration {iteration}: {e}")
+                iss_pcs = []
+            try:
+                trace_dir = bug_dir / "rtl_trace"
+                rtl_pcs = self._write_rtl_trace(trace_dir, ultimate)
                 self._copy_rtl_trace_summary(trace_dir, bug_dir / "rtl_trace_pc.txt")
                 if rtl_result.timeout:
                     self._append_trace_summary(bug_dir, trace_dir)
             except Exception as e:
                 logger.error(f"Failed to capture RTL trace at iteration {iteration}: {e}")
+                rtl_pcs = []
+            try:
+                self._write_trace_comparison(bug_dir / "pc_trace_compare.txt", iss_pcs, rtl_pcs)
+            except Exception as e:
+                logger.error(f"Failed to write trace comparison at iteration {iteration}: {e}")
             reduction = None
             try:
                 reduction = self.reducer.reduce(ultimate, iss_result.feedback)
@@ -415,14 +423,22 @@ class Fuzzer:
         if rtl_result.success and not rtl_result.bug_detected:
             try:
                 good_dir = self._report_good_run(iteration, intermediate, ultimate, rtl_result)
-                trace_dir = good_dir / "rtl_trace"
-                rtl_pcs = self._write_rtl_trace(trace_dir, ultimate)
                 iss_pcs = self._write_iss_trace(good_dir / "iss_trace_ultimate.txt", ultimate)
                 self._write_iss_trace(good_dir / "iss_trace_intermediate.txt", intermediate)
-                self._write_trace_comparison(good_dir / "pc_trace_compare.txt", iss_pcs, rtl_pcs)
+            except Exception as e:
+                logger.error(f"Failed to capture ISS trace at iteration {iteration}: {e}")
+                iss_pcs = []
+            try:
+                trace_dir = good_dir / "rtl_trace"
+                rtl_pcs = self._write_rtl_trace(trace_dir, ultimate)
                 self._copy_rtl_trace_summary(trace_dir, good_dir / "rtl_trace_pc.txt")
             except Exception as e:
-                logger.error(f"Failed to save good run at iteration {iteration}: {e}")
+                logger.error(f"Failed to capture RTL trace at iteration {iteration}: {e}")
+                rtl_pcs = []
+            try:
+                self._write_trace_comparison(good_dir / "pc_trace_compare.txt", iss_pcs, rtl_pcs)
+            except Exception as e:
+                logger.error(f"Failed to write trace comparison at iteration {iteration}: {e}")
         elif not rtl_result.success and not rtl_result.bug_detected:
             self.stats.rtl_errors += 1
 
@@ -778,7 +794,10 @@ class Fuzzer:
         vcd_path = output_dir / "testbench.vcd"
         if self.config.cpu.name == "kronos":
             vcd_path = output_dir / "program.vcd"
-        pcs, source = self._extract_pc_trace(vcd_path, max_entries=None)
+        pcs = []
+        source = "missing"
+        if vcd_path.exists():
+            pcs, source = self._extract_pc_trace(vcd_path, max_entries=None)
         trace_path = output_dir / "rtl_trace_pc.txt"
         with trace_path.open("w") as trace_file:
             trace_file.write("# RTL PC trace\n")
