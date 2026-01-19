@@ -131,6 +131,7 @@ def _assert_trace_files(run_dir: Path):
     assert (run_dir / "iss_trace_ultimate.txt").exists()
     assert (run_dir / "rtl_trace_pc.txt").exists()
     assert (run_dir / "pc_trace_compare.txt").exists()
+    assert (run_dir / "ultimate.vcd").exists()
 
 
 def test_trace_outputs_for_bug_run(tmp_path):

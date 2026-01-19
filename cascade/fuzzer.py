@@ -13,6 +13,7 @@ import multiprocessing
 import queue
 import os
 import fcntl
+import shutil
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Tuple
 from dataclasses import dataclass, field
@@ -794,10 +795,18 @@ class Fuzzer:
         vcd_path = output_dir / "testbench.vcd"
         if self.config.cpu.name == "kronos":
             vcd_path = output_dir / "program.vcd"
+        if not vcd_path.exists():
+            vcd_candidates = sorted(output_dir.glob("*.vcd"))
+            if vcd_candidates:
+                vcd_path = vcd_candidates[0]
         pcs = []
         source = "missing"
         if vcd_path.exists():
             pcs, source = self._extract_pc_trace(vcd_path, max_entries=None)
+            try:
+                shutil.copyfile(vcd_path, output_dir.parent / "ultimate.vcd")
+            except Exception as e:
+                logger.error(f"Failed to save VCD trace: {e}")
         trace_path = output_dir / "rtl_trace_pc.txt"
         with trace_path.open("w") as trace_file:
             trace_file.write("# RTL PC trace\n")
