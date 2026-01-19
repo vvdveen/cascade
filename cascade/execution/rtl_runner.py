@@ -284,9 +284,13 @@ class RTLRunner:
                 f"{sig_end:08x} T end_signature\n"
             )
             sim_binary = self._get_sim_binary()
-            if sim_binary is None:
+            if sim_binary is None or sim_binary.name != "kronos_compliance":
+                ok, msg = self.build_simulation()
+                if ok:
+                    sim_binary = self._get_sim_binary()
+            if sim_binary is None or sim_binary.name != "kronos_compliance":
                 result = RTLResult()
-                result.error_message = "RTL simulation binary not available"
+                result.error_message = "RTL simulation binary not available (kronos_compliance missing)"
                 return result
             result = RTLResult()
             start_time = time.perf_counter()

@@ -182,6 +182,22 @@ def test_rtl_program_timeout_is_detected():
     assert result.bug_detected is True
 
 
+def test_rtl_trace_writes_vcd():
+    runner = _get_rtl_runner()
+    program = _make_program(
+        runner,
+        [
+            EncodedInstruction(ADDI, rd=1, rs1=0, imm=0),
+            EncodedInstruction(EBREAK),
+        ],
+    )
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+        trace_dir = tmpdir / "rtl_trace"
+        runner.capture_trace(program, trace_dir)
+        assert any(trace_dir.glob("*.vcd"))
+
+
 def test_kronos_rtl_program_completes_without_timeout():
     rtl_path = Path("deps/kronos")
     if not rtl_path.exists():
