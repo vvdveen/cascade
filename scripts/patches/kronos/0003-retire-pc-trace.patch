@@ -66,6 +66,8 @@ index 7e29d10..4a67f38 100644
 +  output logic        retire_vld,
 +  output logic [31:0] retire_pc
  );
+ 
+ logic [31:0] immediate;
 @@ -141,7 +144,9 @@ kronos_EX #(
    .data_ack          (data_ack          ),
    .software_interrupt(software_interrupt),

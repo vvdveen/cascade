@@ -8,9 +8,9 @@
 # - PicoRV32 (test target)
 # - Kronos (test target)
 #
-set -e
+set -euo pipefail
 
-INSTALL_PREFIX="${INSTALL_PREFIX:-/opt/riscv}"
+INSTALL_PREFIX="${INSTALL_PREFIX:-$HOME/.local/riscv}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="${PROJECT_DIR}/deps"
@@ -201,7 +201,12 @@ install_verilator() {
 
     # Check if already installed and version >= 5
     if command -v verilator &> /dev/null; then
-        local version=$(verilator --version | grep -oP '\d+\.\d+' | head -1)
+        local version
+        version=$(verilator --version 2>/dev/null | awk 'match($0, /[0-9]+\.[0-9]+/) { print substr($0, RSTART, RLENGTH); exit }')
+        if [ -z "$version" ]; then
+            log_error "Failed to parse Verilator version."
+            return 1
+        fi
         local major=$(echo "$version" | cut -d. -f1)
         if [ "$major" -ge 5 ]; then
             log_info "Verilator $version already installed"
@@ -510,6 +515,7 @@ main() {
             install_spike
             install_verilator
             install_picorv32
+            install_kronos
             install_python_deps
             create_config
             print_path_instructions

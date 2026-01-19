@@ -1,8 +1,10 @@
 diff --git a/cmake/AddHDLVerilator.cmake b/cmake/AddHDLVerilator.cmake
-index 72083b3..9a1b7ff 100644
+index 7231cb4..3117843 100644
 --- a/cmake/AddHDLVerilator.cmake
 +++ b/cmake/AddHDLVerilator.cmake
-@@ -11,9 +11,10 @@ if (NOT VERILATOR_ENV_SETUP)
+@@ -11,9 +11,10 @@ endif()
+ 
+ if (NOT VERILATOR_ENV_SETUP)
    # Make common verilator shared lib
 -  add_library(verilated SHARED
 +  add_library(verilated STATIC
@@ -10,7 +12,9 @@ index 72083b3..9a1b7ff 100644
      ${VERILATOR_INCLUDES}/verilated_vcd_c.cpp
 +    ${VERILATOR_INCLUDES}/verilated_threads.cpp
    )
-@@ -73,7 +74,7 @@ function(verilate_hdl)
+ 
+   target_include_directories(verilated SYSTEM PUBLIC
+@@ -97,7 +98,7 @@ function(verilate_hdl)
      COMMAND
        ${VERILATOR_BIN}
      ARGS
@@ -19,3 +23,105 @@ index 72083b3..9a1b7ff 100644
        --prefix ${ARG_NAME}
        --top-module ${ARG_NAME}
        ${includes}
+@@ -127,4 +128,4 @@ function(verilate_hdl)
+     INTERFACE_LINK_LIBRARIES verilated
+     INTERFACE_INCLUDE_DIRECTORIES "${working_dir}"
+     INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${working_dir}")
+-endfunction()
+\ No newline at end of file
++endfunction()
+diff --git a/riscv-compliance/kronos_compliance.cpp b/riscv-compliance/kronos_compliance.cpp
+index f002e5b..4fb02d6 100644
+--- a/riscv-compliance/kronos_compliance.cpp
++++ b/riscv-compliance/kronos_compliance.cpp
+@@ -10,9 +10,18 @@
+ #include <verilated_vcd_c.h>
+ 
+ #include "kronos_compliance_top.h"
++#include "kronos_compliance_top___024root.h"
+ 
+ using namespace std;
+ 
++double sc_time_stamp() {
++  return 0.0;
++}
++
++static constexpr uint32_t BOOT_ADDR = 0x80000000;
++static constexpr uint32_t MEM_BYTES = 64 * 1024;
++static constexpr uint32_t MEM_MASK = MEM_BYTES - 1;
++
+ class Sim {
+   private:
+     kronos_compliance_top *top;
+@@ -26,15 +35,17 @@ class Sim {
+       trace = new VerilatedVcdC;
+ 
+       ticks = 0;
++      top->eval();
+ 
+       // load program into memory
+       IData word;
+       int i;
+       ifstream FILE(memfile.c_str(), ios::binary);
+       
++      uint32_t base_word = (BOOT_ADDR & MEM_MASK) >> 2;
+       i = 0;
+       while(FILE.read((char*)&word, 4)) {
+-        top->kronos_compliance_top__DOT__u_mem__DOT__MEM[i] = word;
++        top->rootp->kronos_compliance_top__DOT__u_mem__DOT__MEM[base_word + i] = word;
+         i++;
+       }
+       FILE.close();
+@@ -117,14 +128,14 @@ class Sim {
+       char txt[32];
+       IData data;
+ 
+-      // convert byte-address into word address
+-      begin_addr  = begin_addr >> 2;
+-      end_addr  = end_addr >> 2;
++      // convert byte-address into word address within the modeled memory
++      begin_addr = (begin_addr & MEM_MASK) >> 2;
++      end_addr = (end_addr & MEM_MASK) >> 2;
+ 
+       ofstream FILE(resfile.c_str());
+ 
+       for (int i=begin_addr; i<end_addr; i++) {
+-        data = top->kronos_compliance_top__DOT__u_mem__DOT__MEM[i];
++        data = top->rootp->kronos_compliance_top__DOT__u_mem__DOT__MEM[i];
+         sprintf(txt, "%08x\n", data);
+         FILE << txt;
+       }
+@@ -170,6 +181,9 @@ int main(int argc, char **argv) {
+       items.push_back(buf);
+     }
+ 
++    if (items.size() < 3) {
++      continue;
++    }
+     if (items[2] == "begin_signature") {
+       begin_signature = items[0];
+     } else if (items[2] == "end_signature") {
+diff --git a/riscv-compliance/kronos_compliance_top.sv b/riscv-compliance/kronos_compliance_top.sv
+index dffdfe8..3c88f77 100644
+--- a/riscv-compliance/kronos_compliance_top.sv
++++ b/riscv-compliance/kronos_compliance_top.sv
+@@ -24,7 +24,9 @@ logic [31:0] mem_rd_data;
+ logic mem_en, mem_wr_en;
+ logic [3:0] mem_mask;
+ 
+-kronos_core u_dut (
++kronos_core #(
++  .BOOT_ADDR(32'h80000000)
++) u_dut (
+   .clk               (clk         ),
+   .rstz              (rstz        ),
+   .instr_addr        (instr_addr  ),
+@@ -65,7 +67,7 @@ always_ff @(posedge clk) begin
+   data_ack <= data_req;
+ end
+ 
+-generic_spram #(.KB(8)) u_mem (
++generic_spram #(.KB(64)) u_mem (
+   .clk  (clk        ),
+   .addr (mem_addr   ),
+   .wdata(mem_wr_data),
