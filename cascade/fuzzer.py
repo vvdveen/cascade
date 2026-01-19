@@ -32,7 +32,7 @@ from .isa.instructions import ADDI, EBREAK, LUI, SW
 from .generator.ultimate import UltimateProgram, UltimateProgramGenerator
 from .execution.iss_runner import ISSRunner, MockISSRunner
 from .execution.rtl_runner import RTLRunner, MockRTLRunner
-from .execution.elf_writer import ELFWriter
+from .execution.elf_writer import ELFWriter, write_hex, write_raw_binary
 from .reduction.reducer import Reducer
 
 # Set up logging
@@ -426,16 +426,36 @@ class Fuzzer:
         # Save programs
         ultimate_path = bug_dir / "ultimate.elf"
         intermediate_path = bug_dir / "intermediate.elf"
+        ultimate_hex_path = bug_dir / "ultimate.hex"
+        ultimate_bin_path = bug_dir / "ultimate.bin"
+        ultimate_nm_path = bug_dir / "ultimate.nm"
         ultimate_asm_path = bug_dir / "ultimate.S"
         rerun_script_path = bug_dir / "rerun_rtl.sh"
+        rerun_rtl_ultimate_script_path = bug_dir / "rerun_rtl_ultimate.sh"
         iss_intermediate_script_path = bug_dir / "rerun_iss_intermediate.sh"
         iss_ultimate_script_path = bug_dir / "rerun_iss_ultimate.sh"
 
         self.elf_writer.write(ultimate, ultimate_path)
         self.elf_writer.write(intermediate, intermediate_path)
+        write_hex(ultimate, ultimate_hex_path, base_address=0)
+        write_raw_binary(ultimate, ultimate_bin_path)
+        if self.config.cpu.name == "kronos":
+            tohost = ultimate.data_start
+            sig_begin = ultimate.data_start + 0x10
+            sig_end = ultimate.data_start + 0x20
+            ultimate_nm_path.write_text(
+                f"{tohost:08x} T tohost\n"
+                f"{sig_begin:08x} T begin_signature\n"
+                f"{sig_end:08x} T end_signature\n"
+            )
         with open(ultimate_asm_path, "w") as asm_file:
             asm_file.write(self._format_program_asm(ultimate))
         self._write_rerun_script(rerun_script_path, intermediate.descriptor.seed if intermediate.descriptor else 0)
+        self._write_rerun_rtl_ultimate_script(
+            rerun_rtl_ultimate_script_path,
+            ultimate_hex_path,
+            ultimate_bin_path
+        )
         self._write_rerun_iss_script(iss_intermediate_script_path, intermediate_path)
         self._write_rerun_iss_script(iss_ultimate_script_path, ultimate_path)
         self._write_iss_trace(bug_dir / "iss_trace_ultimate.txt", ultimate)
@@ -737,6 +757,61 @@ class Fuzzer:
             f'"{spike_path}" --isa {self.iss_runner.isa_string} '
             f'-m{mem_start:#x}:0x100000 -l --log-commits "{program_path}"\n'
         )
+        script_path.write_text(script)
+        script_path.chmod(0o755)
+
+    def _write_rerun_rtl_ultimate_script(self, script_path: Path,
+                                         hex_path: Path, bin_path: Path) -> None:
+        """Write a helper script to re-run RTL on the ultimate program and dump VCD."""
+        rtl_path = self.config.rtl_model_path or Path("deps/picorv32")
+        sim_binary = self.rtl_runner._get_sim_binary()
+        sim_binary_str = str(sim_binary) if sim_binary else ""
+        timeout = self.config.rtl_timeout
+
+        if self.config.cpu.name == "kronos":
+            script = (
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                "\n"
+                'cd "$(dirname "$0")"\n'
+                f'SIM_BIN="{sim_binary_str}"\n'
+                f'RTL_PATH="{rtl_path}"\n'
+                'if [ -z "$SIM_BIN" ] || [ ! -x "$SIM_BIN" ]; then\n'
+                '  if [ -x "$RTL_PATH/build/output/bin/kronos_compliance" ]; then\n'
+                '    SIM_BIN="$RTL_PATH/build/output/bin/kronos_compliance"\n'
+                "  else\n"
+                '    echo "RTL simulator not found. Expected kronos_compliance."\n'
+                "    exit 1\n"
+                "  fi\n"
+                "fi\n"
+                'if [ ! -f "ultimate.nm" ]; then\n'
+                '  echo "Missing ultimate.nm (needed for tohost/signature)."\n'
+                "  exit 1\n"
+                "fi\n"
+                '"$SIM_BIN" "ultimate.bin" "signature.output" | tee rtl.log\n'
+                'echo "VCD: $(pwd)/ultimate.vcd"\n'
+            )
+        else:
+            script = (
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                "\n"
+                'cd "$(dirname "$0")"\n'
+                f'SIM_BIN="{sim_binary_str}"\n'
+                f'RTL_PATH="{rtl_path}"\n'
+                'if [ -z "$SIM_BIN" ] || [ ! -x "$SIM_BIN" ]; then\n'
+                '  if [ -x "$RTL_PATH/testbench_verilator" ]; then\n'
+                '    SIM_BIN="$RTL_PATH/testbench_verilator"\n'
+                '  elif [ -x "$RTL_PATH/testbench_verilator_dir/Vpicorv32_wrapper" ]; then\n'
+                '    SIM_BIN="$RTL_PATH/testbench_verilator_dir/Vpicorv32_wrapper"\n'
+                "  else\n"
+                '    echo "RTL simulator not found. Expected testbench_verilator."\n'
+                "    exit 1\n"
+                "  fi\n"
+                "fi\n"
+                f'"$SIM_BIN" +firmware="{hex_path.name}" +max_cycles={timeout} +trace +vcd "$@" | tee rtl.log\n'
+                'echo "VCD: $(pwd)/testbench.vcd"\n'
+            )
         script_path.write_text(script)
         script_path.chmod(0o755)
 
