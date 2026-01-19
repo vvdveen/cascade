@@ -188,3 +188,31 @@ def test_trace_outputs_for_good_run(tmp_path):
     good_dirs = list((tmp_path / "test" / "good").glob("good_*"))
     assert len(good_dirs) == 1
     _assert_trace_files(good_dirs[0])
+
+
+def test_trace_outputs_for_rtl_error(tmp_path):
+    config = FuzzerConfig(
+        cpu=CPUConfig(name="test", xlen=32, extensions={Extension.I}),
+        output_dir=tmp_path,
+    )
+    fuzzer = Fuzzer(config)
+
+    intermediate = _make_intermediate_program(seed=3)
+    ultimate = _make_ultimate_program()
+
+    fuzzer.intermediate_gen = FakeIntermediateGen(intermediate)
+    fuzzer.ultimate_gen = FakeUltimateGen(ultimate)
+    fuzzer.reducer = FakeReducer()
+
+    iss_ok = ISSResult(success=True, timeout=False, feedback=ISSFeedback())
+    ultimate_ok = ISSResult(success=True, timeout=False)
+    fuzzer.iss_runner = FakeISSRunner([iss_ok, ultimate_ok], [0x80000000, 0x80000004])
+
+    rtl_result = RTLResult(success=False, timeout=False, bug_detected=False)
+    fuzzer.rtl_runner = FakeRTLRunner(rtl_result, [0x80000000, 0x80000004, 0x80000008])
+
+    fuzzer._fuzz_iteration(0)
+
+    error_dirs = list((tmp_path / "test" / "errors").glob("rtl_error_*"))
+    assert len(error_dirs) == 1
+    _assert_trace_files(error_dirs[0])

@@ -471,6 +471,40 @@ class Fuzzer:
                 logger.error(f"Failed to write trace comparison at iteration {iteration}: {e}")
         elif not rtl_result.success and not rtl_result.bug_detected:
             self.stats.rtl_errors += 1
+            try:
+                error_dir = self._report_rtl_error(iteration, intermediate, ultimate, rtl_result)
+            except Exception as e:
+                logger.error(f"Failed to save RTL error report at iteration {iteration}: {e}")
+                return
+            try:
+                iss_pcs = self._write_iss_trace(
+                    error_dir / "iss_trace_ultimate.txt",
+                    ultimate,
+                    elf_path=error_dir / "ultimate.elf"
+                )
+                self._write_iss_trace(
+                    error_dir / "iss_trace_intermediate.txt",
+                    intermediate,
+                    elf_path=error_dir / "intermediate.elf"
+                )
+            except Exception as e:
+                logger.error(f"Failed to capture ISS trace for RTL error at iteration {iteration}: {e}")
+                iss_pcs = []
+            try:
+                trace_dir = error_dir / "rtl_trace"
+                rtl_pcs = self._write_rtl_trace(
+                    trace_dir,
+                    ultimate,
+                    elf_path=error_dir / "ultimate.elf"
+                )
+                self._copy_rtl_trace_summary(trace_dir, error_dir / "rtl_trace_pc.txt")
+            except Exception as e:
+                logger.error(f"Failed to capture RTL trace for RTL error at iteration {iteration}: {e}")
+                rtl_pcs = []
+            try:
+                self._write_trace_comparison(error_dir / "pc_trace_compare.txt", iss_pcs, rtl_pcs)
+            except Exception as e:
+                logger.error(f"Failed to write trace comparison for RTL error at iteration {iteration}: {e}")
 
     def _report_bug_pre(self, iteration: int,
                         intermediate: IntermediateProgram,
@@ -600,6 +634,69 @@ class Fuzzer:
             f.write(f"RTL runtime (s): {rtl_result.runtime_seconds:.6f}\n")
             f.write(f"RTL timeout: {rtl_result.timeout}\n")
         return good_dir
+
+    def _report_rtl_error(self, iteration: int,
+                          intermediate: IntermediateProgram,
+                          ultimate: UltimateProgram,
+                          rtl_result) -> Path:
+        """Save artifacts for RTL errors in output/<cpu>/errors."""
+        timestamp = datetime.now()
+        report_id = f"rtl_error_{timestamp.strftime('%Y%m%d_%H%M%S')}_{iteration}"
+        cpu_dir = self.output_dir / self.config.cpu.name
+        error_dir = cpu_dir / "errors" / report_id
+        error_dir.mkdir(parents=True, exist_ok=True)
+
+        ultimate_path = error_dir / "ultimate.elf"
+        intermediate_path = error_dir / "intermediate.elf"
+        ultimate_hex_path = error_dir / "ultimate.hex"
+        ultimate_bin_path = error_dir / "ultimate.bin"
+        ultimate_nm_path = error_dir / "ultimate.nm"
+        ultimate_asm_path = error_dir / "ultimate.S"
+        rerun_script_path = error_dir / "rerun_rtl.sh"
+        rerun_rtl_ultimate_script_path = error_dir / "rerun_rtl_ultimate.sh"
+        iss_intermediate_script_path = error_dir / "rerun_iss_intermediate.sh"
+        iss_ultimate_script_path = error_dir / "rerun_iss_ultimate.sh"
+
+        self.elf_writer.write(ultimate, ultimate_path)
+        self.elf_writer.write(intermediate, intermediate_path)
+        write_hex(ultimate, ultimate_hex_path, base_address=0)
+        write_raw_binary(ultimate, ultimate_bin_path)
+        if self.config.cpu.name == "kronos":
+            tohost = ultimate.data_start
+            sig_begin = ultimate.data_start + 0x10
+            sig_end = ultimate.data_start + 0x20
+            ultimate_nm_path.write_text(
+                f"{tohost:08x} T tohost\n"
+                f"{sig_begin:08x} T begin_signature\n"
+                f"{sig_end:08x} T end_signature\n"
+            )
+        with open(ultimate_asm_path, "w") as asm_file:
+            asm_file.write(self._format_program_asm(ultimate))
+        self._write_rerun_script(rerun_script_path, intermediate.descriptor.seed if intermediate.descriptor else 0)
+        self._write_rerun_rtl_ultimate_script(
+            rerun_rtl_ultimate_script_path,
+            ultimate_hex_path,
+            ultimate_bin_path
+        )
+        self._write_rerun_iss_script(iss_intermediate_script_path, intermediate_path)
+        self._write_rerun_iss_script(iss_ultimate_script_path, ultimate_path)
+
+        meta_path = error_dir / "metadata.txt"
+        with open(meta_path, "w") as f:
+            f.write(f"Report ID: {report_id}\n")
+            f.write(f"Timestamp: {timestamp}\n")
+            f.write(f"Seed: {intermediate.descriptor.seed if intermediate.descriptor else 'unknown'}\n")
+            f.write(f"Blocks: {len(ultimate.blocks)}\n")
+            f.write(f"Cycle count: {rtl_result.cycle_count}\n")
+            f.write(f"RTL runtime (s): {rtl_result.runtime_seconds:.6f}\n")
+            f.write(f"RTL success: {rtl_result.success}\n")
+            f.write(f"RTL timeout: {rtl_result.timeout}\n")
+            f.write(f"Bug detected: {rtl_result.bug_detected}\n")
+            f.write(f"Exit code: {rtl_result.exit_code}\n")
+            f.write(f"RTL error message: {rtl_result.error_message}\n")
+            f.write(f"RTL output:\n{rtl_result.raw_output}\n")
+
+        return error_dir
 
     def _report_bug_post(self, bug_dir: Path, reduction) -> None:
         """Save reduced artifacts and append reduction metadata."""
