@@ -892,10 +892,9 @@ class Fuzzer:
             raise RuntimeError("Missing retire_vld/retire_pc in Kronos VCD")
 
         pcs: List[int] = []
-        vld_prev = 0
         vld_curr = 0
         pc_val: Optional[int] = None
-        pending_retire = False
+        last_appended: Optional[int] = None
         with vcd_path.open("r", errors="replace") as vcd_file:
             header_done = False
             for line in vcd_file:
@@ -907,11 +906,11 @@ class Fuzzer:
                 if not line:
                     continue
                 if line.startswith("#"):
-                    if pending_retire and pc_val is not None:
+                    if vld_curr == 1 and pc_val is not None and pc_val != last_appended:
                         pcs.append(pc_val)
+                        last_appended = pc_val
                         if max_entries is not None and len(pcs) > max_entries:
                             pcs = pcs[-max_entries:]
-                    pending_retire = False
                     continue
                 if line.startswith("b"):
                     parts = line[1:].split()
@@ -938,10 +937,7 @@ class Fuzzer:
                     if ident != retire_vld_id:
                         continue
                     vld_curr = int(line[0], 2)
-                    if vld_prev == 0 and vld_curr == 1:
-                        pending_retire = True
-                    vld_prev = vld_curr
-            if pending_retire and pc_val is not None:
+            if vld_curr == 1 and pc_val is not None and pc_val != last_appended:
                 pcs.append(pc_val)
                 if max_entries is not None and len(pcs) > max_entries:
                     pcs = pcs[-max_entries:]
