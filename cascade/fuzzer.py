@@ -1206,7 +1206,10 @@ class Fuzzer:
                     int_flag = 1 if any(flag.get(name) for name in [
                         "core_interrupt", "external_interrupt", "timer_interrupt", "software_interrupt"
                     ]) else 0
-                    suffix = f" | exc={exc} int={int_flag}"
+                    if exc or int_flag:
+                        suffix = f" | exc={exc} int={int_flag}"
+                    else:
+                        suffix = ""
                 else:
                     suffix = ""
                 if line:
