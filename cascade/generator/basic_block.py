@@ -17,9 +17,11 @@ from ..isa.instructions import (
     get_instructions_by_category, get_hopping_instructions,
     LUI, ADDI, ADD, XOR, JAL, JALR, BEQ, BNE, BLT, BGE, BLTU, BGEU,
     LW, SW, LB, LH, LBU, LHU, SB, SH,
+    CSRRW, CSRRS, CSRRC, CSRRWI, CSRRSI, CSRRCI,
     EBREAK,
 )
 from ..isa.encoding import EncodedInstruction
+from ..isa.csrs import CSR_DEFINITIONS, get_csrs_for_privilege, CSRPrivilege
 from .memory_manager import MemoryManager
 from .register_fsm import RegisterFSM, RegisterState
 
@@ -235,6 +237,8 @@ class BasicBlockGenerator:
             return self._generate_mem_instruction(pc)
         elif category == 'regfsm':
             return self._generate_regfsm_instruction(pc), None
+        elif category == 'csr':
+            return self._generate_csr_instruction(pc), None
         elif category == 'muldiv':
             return self._generate_muldiv_instruction(pc), None
         else:
@@ -299,6 +303,72 @@ class BasicBlockGenerator:
 
         enc = EncodedInstruction(LUI, rd=rd, imm=imm)
         self.reg_fsm.transition_lui(rd, imm >> 12, pc)
+        return enc
+
+    def _generate_csr_instruction(self, pc: int) -> EncodedInstruction:
+        """Generate a CSR instruction, optionally stress CSR behavior."""
+        csr_instrs = self.instruction_pools.get('csr', [])
+        if not csr_instrs:
+            return self._generate_alu_instruction(pc)
+
+        valid_csrs = list(get_csrs_for_privilege(CSRPrivilege.MACHINE).keys())
+        minstret_csrs = [0xB02, 0xB82]
+
+        def pick_invalid_csr() -> int:
+            for _ in range(100):
+                csr = random.randint(0, 0xFFF)
+                if csr not in CSR_DEFINITIONS:
+                    return csr
+            return 0xFFF
+
+        def pick_valid_csr() -> int:
+            if valid_csrs:
+                return random.choice(valid_csrs)
+            return random.randint(0, 0xFFF)
+
+        def pick_csr(mode: str) -> int:
+            if mode == "invalid":
+                return pick_invalid_csr()
+            if mode == "minstret":
+                return random.choice(minstret_csrs)
+            return pick_valid_csr()
+
+        if self.config.csr_stress:
+            roll = random.random()
+            if roll < 0.4:
+                mode = "invalid"
+                op = random.choice([CSRRW, CSRRS, CSRRC, CSRRWI, CSRRSI, CSRRCI])
+            elif roll < 0.7:
+                mode = "minstret"
+                op = random.choice([CSRRW, CSRRWI])
+            else:
+                mode = "read"
+                op = random.choice([CSRRS, CSRRSI])
+        else:
+            mode = "random"
+            op = random.choice(csr_instrs)
+
+        if mode == "invalid":
+            csr = pick_csr("invalid")
+        elif mode == "minstret":
+            csr = pick_csr("minstret")
+        else:
+            csr = pick_csr("valid")
+        rd = self._select_dest_register()
+
+        if op in (CSRRWI, CSRRSI, CSRRCI):
+            zimm = random.randint(0, 31)
+            if mode == "read":
+                zimm = 0
+            enc = EncodedInstruction(op, rd=rd, rs1=zimm, csr=csr)
+        else:
+            rs1 = self._select_operand_register()
+            if mode == "read":
+                rs1 = 0
+            enc = EncodedInstruction(op, rd=rd, rs1=rs1, csr=csr)
+
+        if rd != 0:
+            self.reg_fsm.mark_written(rd, pc)
         return enc
 
     def _generate_mem_instruction(self, pc: int) -> Tuple[EncodedInstruction,

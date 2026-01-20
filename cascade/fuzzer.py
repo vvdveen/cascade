@@ -1574,6 +1574,11 @@ def main():
         default=(os.cpu_count() or 1),
         help="Number of parallel workers"
     )
+    parser.add_argument(
+        "--csr-stress",
+        action="store_true",
+        help="Bias generation toward CSR reads/writes (invalid/minstret)"
+    )
 
     args = parser.parse_args()
 
@@ -1608,6 +1613,7 @@ def main():
         rtl_model_path=args.rtl_path,
         seed=args.seed,
         num_workers=args.workers,
+        csr_stress=args.csr_stress,
     )
 
     rtl_runner = RTLRunner(config)

@@ -188,6 +188,9 @@ class FuzzerConfig:
     # Parallel workers
     num_workers: int = 1
 
+    # Bias generation toward CSR stress patterns
+    csr_stress: bool = False
+
 
 # Pre-defined CPU configurations
 PICORV32_CONFIG = CPUConfig(
