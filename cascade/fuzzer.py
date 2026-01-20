@@ -945,6 +945,127 @@ class Fuzzer:
             raise RuntimeError("No retire PCs captured from Kronos VCD")
         return pcs
 
+    def _extract_kronos_retire_trace_with_flags(
+        self,
+        vcd_path: Path,
+        max_entries: Optional[int] = 64
+    ) -> Tuple[List[int], List[dict], dict]:
+        """Extract retire PCs and exception/interrupt flags from Kronos VCD."""
+        retire_vld_id = None
+        retire_pc_id = None
+        signal_ids: dict[str, str] = {}
+        in_header = True
+        with vcd_path.open("r", errors="replace") as vcd_file:
+            for line in vcd_file:
+                if in_header:
+                    stripped = line.lstrip()
+                    if stripped.startswith("$var"):
+                        parts = stripped.split()
+                        if len(parts) >= 5:
+                            ident = parts[3]
+                            name = parts[4]
+                            if name.endswith("retire_vld"):
+                                retire_vld_id = ident
+                            elif name.endswith("retire_pc"):
+                                retire_pc_id = ident
+                            elif name.endswith("trap_jump"):
+                                signal_ids["trap_jump"] = ident
+                            elif name.endswith("exception"):
+                                signal_ids["exception"] = ident
+                            elif name.endswith("core_interrupt"):
+                                signal_ids["core_interrupt"] = ident
+                            elif name.endswith("external_interrupt"):
+                                signal_ids["external_interrupt"] = ident
+                            elif name.endswith("timer_interrupt"):
+                                signal_ids["timer_interrupt"] = ident
+                            elif name.endswith("software_interrupt"):
+                                signal_ids["software_interrupt"] = ident
+                    elif stripped.startswith("$enddefinitions"):
+                        in_header = False
+                        break
+        if not retire_vld_id or not retire_pc_id:
+            raise RuntimeError("Missing retire_vld/retire_pc in Kronos VCD")
+
+        pcs: List[int] = []
+        flags: List[dict] = []
+        vld_curr = 0
+        pc_val: Optional[int] = None
+        last_appended: Optional[int] = None
+        flag_state = {name: 0 for name in signal_ids}
+
+        def flush_sample():
+            nonlocal last_appended
+            if vld_curr == 1 and pc_val is not None and pc_val != last_appended:
+                pcs.append(pc_val)
+                flags.append(dict(flag_state))
+                last_appended = pc_val
+                if max_entries is not None and len(pcs) > max_entries:
+                    pcs[:] = pcs[-max_entries:]
+                    flags[:] = flags[-max_entries:]
+
+        with vcd_path.open("r", errors="replace") as vcd_file:
+            header_done = False
+            for line in vcd_file:
+                if not header_done:
+                    if line.lstrip().startswith("$enddefinitions"):
+                        header_done = True
+                    continue
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith("#"):
+                    flush_sample()
+                    continue
+                if line.startswith("b"):
+                    parts = line[1:].split()
+                    if len(parts) != 2:
+                        continue
+                    bits, ident = parts
+                    if ident == retire_pc_id:
+                        if any(ch in "xXzZ" for ch in bits):
+                            continue
+                        pc_val = int(bits, 2) & 0xFFFFFFFF
+                        continue
+                    for name, sig_id in signal_ids.items():
+                        if ident != sig_id:
+                            continue
+                        if any(ch in "xXzZ" for ch in bits):
+                            continue
+                        flag_state[name] = 1 if int(bits, 2) != 0 else 0
+                        break
+                elif line.startswith("h"):
+                    parts = line[1:].split()
+                    if len(parts) != 2:
+                        continue
+                    value, ident = parts
+                    if ident == retire_pc_id:
+                        if any(ch in "xXzZ" for ch in value):
+                            continue
+                        pc_val = int(value, 16) & 0xFFFFFFFF
+                        continue
+                    for name, sig_id in signal_ids.items():
+                        if ident != sig_id:
+                            continue
+                        if any(ch in "xXzZ" for ch in value):
+                            continue
+                        flag_state[name] = 1 if int(value, 16) != 0 else 0
+                        break
+                elif line[0] in "01" and len(line) > 1:
+                    ident = line[1:]
+                    if ident == retire_vld_id:
+                        vld_curr = int(line[0], 2)
+                        continue
+                    for name, sig_id in signal_ids.items():
+                        if ident != sig_id:
+                            continue
+                        flag_state[name] = int(line[0], 2)
+                        break
+            flush_sample()
+
+        if not pcs:
+            raise RuntimeError("No retire PCs captured from Kronos VCD")
+        return pcs, flags, signal_ids
+
     def _vcd_signal_seen_high(self, vcd_path: Path, signal_name: str) -> bool:
         """Check if a single-bit signal ever goes high in VCD."""
         signal_id = None
@@ -1042,10 +1163,14 @@ class Fuzzer:
             if vcd_candidates:
                 vcd_path = vcd_candidates[0]
         pcs = []
+        flags = []
+        signal_ids = {}
         source = "missing"
         if vcd_path.exists():
             if self.config.cpu.name == "kronos":
-                pcs = self._extract_kronos_retire_trace(vcd_path, max_entries=None)
+                pcs, flags, signal_ids = self._extract_kronos_retire_trace_with_flags(
+                    vcd_path, max_entries=None
+                )
                 source = "retire_pc"
             else:
                 pcs, source = self._extract_pc_trace(vcd_path, max_entries=None)
@@ -1063,15 +1188,31 @@ class Fuzzer:
             trace_file.write("# RTL PC trace\n")
             trace_file.write(f"# source_signal={source}\n")
             trace_file.write(f"# success={result.success} timeout={result.timeout}\n")
+            if self.config.cpu.name == "kronos":
+                exc_sig = "trap_jump" if "trap_jump" in signal_ids else "exception"
+                int_sigs = [name for name in [
+                    "core_interrupt", "external_interrupt", "timer_interrupt", "software_interrupt"
+                ] if name in signal_ids]
+                trace_file.write(f"# exc_signal={exc_sig if exc_sig in signal_ids else 'missing'}\n")
+                trace_file.write(f"# int_signals={','.join(int_sigs) if int_sigs else 'missing'}\n")
             if not pcs:
                 trace_file.write("# no pcs captured\n")
                 return []
-            for pc in pcs:
+            for idx, pc in enumerate(pcs):
                 line = disasm.get(pc)
-                if line:
-                    trace_file.write(f"0x{pc:08x} | {line}\n")
+                if self.config.cpu.name == "kronos":
+                    flag = flags[idx] if idx < len(flags) else {}
+                    exc = 1 if flag.get("trap_jump") or flag.get("exception") else 0
+                    int_flag = 1 if any(flag.get(name) for name in [
+                        "core_interrupt", "external_interrupt", "timer_interrupt", "software_interrupt"
+                    ]) else 0
+                    suffix = f" | exc={exc} int={int_flag}"
                 else:
-                    trace_file.write(f"0x{pc:08x}\n")
+                    suffix = ""
+                if line:
+                    trace_file.write(f"0x{pc:08x} | {line}{suffix}\n")
+                else:
+                    trace_file.write(f"0x{pc:08x}{suffix}\n")
         return pcs
 
     def _disassemble_elf(self, elf_path: Optional[Path]) -> dict[int, str]:
